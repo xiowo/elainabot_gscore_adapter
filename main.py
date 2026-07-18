@@ -393,8 +393,10 @@ async def gscore_adapter_command(event):
         _save_runtime_config(config)
         await event.reply(f"✅ 已拉黑用户 {_format_mention(target_user)}")
     else:
-        if target_user in blocked_users:
-            blocked_users.remove(target_user)
+        if target_user not in blocked_users:
+            await event.reply(f"⚠️ 用户 {_format_mention(target_user)} 不在黑名单中")
+            return True
+        blocked_users.remove(target_user)
         config["blocked_users"] = blocked_users
         _save_runtime_config(config)
         await event.reply(f"✅ 已取消拉黑用户 {_format_mention(target_user)}")
