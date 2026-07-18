@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 from io import BytesIO
@@ -58,6 +59,7 @@ CONFIG_API = "/api/ext/elainabot-gscore-adapter/config"
 _clients: Dict[str, GsCoreClient] = {}
 _last_events: Dict[str, Any] = {}
 _started_at = 0.0
+_manual_reconnecting = False
 
 
 @on_load
@@ -99,7 +101,7 @@ async def _handle_save_config(request):
         return web.json_response({"success": False, "error": "请求格式错误"}, status=400)
 
     old_config = ctx.read_config(filename="config.yaml") or {}
-    if not body.get("token") and old_config.get("token"):
+    if "token" not in body and old_config.get("token"):
         body["token"] = old_config.get("token")
 
     config = _normalize_config(body)
@@ -227,11 +229,53 @@ def _client_connected(client: GsCoreClient) -> bool:
     return bool(client and client.ws is not None and not getattr(client.ws, "closed", True))
 
 
+def _client_running(client: GsCoreClient) -> bool:
+    runner = getattr(client, "_runner", None)
+    return bool(client and getattr(client, "_running", False) and runner is not None and not runner.done())
+
+
+def _is_auto_reconnecting() -> bool:
+    return any(_client_running(client) and not _client_connected(client) for client in _clients.values())
+
+
 async def _restart_clients() -> Dict[str, Any]:
     config = _normalize_config(ctx.read_config(filename="config.yaml") or DEFAULT_CONFIG)
     ctx.save_config(config, filename="config.yaml")
     await _apply_config(config)
     return config
+
+
+async def _manual_restart_clients(max_attempts: int = 3) -> Optional[bool]:
+    global _manual_reconnecting
+    if _manual_reconnecting or _is_auto_reconnecting():
+        return None
+
+    _manual_reconnecting = True
+    try:
+        config = _normalize_config(ctx.read_config(filename="config.yaml") or DEFAULT_CONFIG)
+        ctx.save_config(config, filename="config.yaml")
+
+        manual_config = dict(config)
+        manual_config["max_reconnect_attempts"] = max_attempts
+        await _apply_config(manual_config)
+
+        if not _clients:
+            return False
+        if _is_connected():
+            return True
+
+        reconnect_interval = max(1, int(config.get("reconnect_interval") or DEFAULT_CONFIG["reconnect_interval"]))
+        deadline = time.time() + max_attempts * (reconnect_interval + 65)
+        while time.time() < deadline:
+            if _is_connected():
+                return True
+            if not any(_client_running(client) for client in _clients.values()):
+                return False
+            await asyncio.sleep(1)
+
+        return _is_connected()
+    finally:
+        _manual_reconnecting = False
 
 
 def _get_framework_bot_map() -> Dict[str, Dict[str, Any]]:
@@ -353,8 +397,13 @@ async def gscore_adapter_command(event):
         await event.reply(f"{__plugin_meta__['name']} v{__plugin_meta__['version']}")
         return True
     if cmd == "重连":
-        await _restart_clients()
-        await event.reply("已重新连接 GScore 服务")
+        result = await _manual_restart_clients(max_attempts=3)
+        if result is None:
+            await event.reply("🔄 正在重连中，请稍后查看状态。")
+        elif result:
+            await event.reply("✅ 当前 Bot 已连接。")
+        else:
+            await event.reply("❌ 连接失败，请检查配置。")
         return True
 
     group_id = _event_group_id(event)
@@ -379,7 +428,6 @@ async def gscore_adapter_command(event):
 
     target_user = _extract_mentioned_user_id(event)
     if not target_user:
-        prefix = str(config.get("command_prefix") or DEFAULT_CONFIG["command_prefix"])
         await event.reply(f"❌ 请 @要拉黑的用户")
         return True
     blocked_users = list(config.get("blocked_users") or [])
@@ -424,16 +472,16 @@ def _build_help_text() -> str:
     return "\n".join(
         [
             "[= 常用命令 =]",
-            f"> `{prefix}`help - 显示帮助信息",
-            f"> `{prefix}`status - 查看连接器状态",
-            f"> `{prefix}`version - 查看插件版本",
-            f"> `{prefix}`重连 - 立即重连 GScore 服务",
+            f"> `{prefix}help` - 显示帮助信息",
+            f"> `{prefix}status` - 查看连接器状态",
+            f"> `{prefix}version` - 查看插件版本",
+            f"> `{prefix}重连` - 立即重连 GScore 服务",
             f"\n",
             f"[= 管理命令 =]",
-            f"> `{prefix}`群禁用 - 开启本群早柚核心",
-            f"> `{prefix}`群启用 - 关闭本群早柚核心",
-            f"> `{prefix}`拉黑 @用户 - 拉黑用户（不转发其消息）",
-            f"> `{prefix}`取消拉黑 @用户 - 取消拉黑用户",
+            f"> `{prefix}群禁用` - 关闭本群早柚核心",
+            f"> `{prefix}群启用` - 开启本群早柚核心",
+            f"> `{prefix}拉黑 @用户` - 拉黑用户（不转发其消息）",
+            f"> `{prefix}取消拉黑 @用户` - 取消拉黑用户",
         ]
     )
 
