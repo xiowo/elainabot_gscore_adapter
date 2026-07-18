@@ -764,7 +764,7 @@ async def _send_with_event(event, msg: MessageSend, parts: Dict[str, Any]):
     response = None
 
     if parts["image"]:
-        markdown = await _compose_image_markdown(parts["image"], text, event=event)
+        markdown = await _compose_ordered_markdown(parts, event=event)
         if markdown:
             log.info("通过原始 event 回复图床 Markdown 图片: target=%s/%s", msg.target_type, msg.target_id)
             response = await event.reply(
@@ -806,7 +806,7 @@ async def _send_with_sender(msg: MessageSend, parts: Dict[str, Any]):
 
     if msg.target_type == "group":
         if parts["image"]:
-            markdown = await _compose_image_markdown(parts["image"], text, sender=sender)
+            markdown = await _compose_ordered_markdown(parts, sender=sender)
             if markdown:
                 log.info("通过 sender 主动发送群图床 Markdown 图片: target_id=%s msg_id=%s", msg.target_id, msg.msg_id)
                 return await sender.send_to_group(
@@ -822,7 +822,7 @@ async def _send_with_sender(msg: MessageSend, parts: Dict[str, Any]):
         return await sender.send_to_group(msg.target_id, text or " ", msg_id=msg.msg_id or None)
     if msg.target_type == "direct":
         if parts["image"]:
-            markdown = await _compose_image_markdown(parts["image"], text, sender=sender)
+            markdown = await _compose_ordered_markdown(parts, sender=sender)
             if markdown:
                 log.info("通过 sender 主动发送私聊图床 Markdown 图片: target_id=%s msg_id=%s", msg.target_id, msg.msg_id)
                 return await sender.send_to_user(
@@ -869,6 +869,42 @@ def _compose_text(parts: Dict[str, Any], *, include_mentions: bool = True) -> st
 
 def _compose_mentions(parts: Dict[str, Any]) -> str:
     return " ".join(_format_mention(user_id) for user_id in parts["at_list"] if str(user_id or "").strip())
+
+
+async def _compose_ordered_markdown(parts: Dict[str, Any], *, event=None, sender=None) -> Optional[str]:
+    segments: List[str] = []
+
+    if parts["at_list"]:
+        mentions = _compose_mentions(parts)
+        if mentions:
+            segments.append(mentions)
+
+    ordered = parts.get("ordered") or []
+    for item_type, data in ordered:
+        if item_type == "text":
+            text = str(data or "").strip()
+            if text:
+                segments.append(text)
+        elif item_type == "image":
+            image_markdown = await _compose_image_markdown(data, event=event, sender=sender)
+            if not image_markdown:
+                return None
+            segments.append(image_markdown)
+
+    if not segments:
+        text = _compose_text(parts)
+        if parts["image"]:
+            image_markdown = await _compose_image_markdown(parts["image"], event=event, sender=sender)
+            if not image_markdown:
+                return None
+            segments.extend([item for item in (text, image_markdown) if item])
+        elif text:
+            segments.append(text)
+
+    if parts["template_buttons"]:
+        segments.append(f"[按钮模板: {parts['template_buttons']}]")
+
+    return "\n".join(segment for segment in segments if segment).strip()
 
 
 def _format_mention(user_id: Any) -> str:

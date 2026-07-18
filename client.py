@@ -249,14 +249,17 @@ def split_send_content(content: Optional[Iterable[Message]]) -> Dict[str, Any]:
         "buttons": [],
         "template_markdown": {},
         "template_buttons": "",
+        "ordered": [],
     }
     for item in content or []:
         if not item.data:
             continue
         if item.type == "text":
             result["text"] += str(item.data)
+            result["ordered"].append(("text", str(item.data)))
         elif item.type == "image":
             result["image"] = item.data
+            result["ordered"].append(("image", item.data))
         elif item.type == "record":
             result["record"] = item.data
         elif item.type == "video":
@@ -271,10 +274,12 @@ def split_send_content(content: Optional[Iterable[Message]]) -> Dict[str, Any]:
             result["reply"] = item.data
         elif item.type == "markdown":
             result["markdown"] = item.data
+            result["ordered"].append(("text", str(item.data)))
         elif item.type == "buttons":
             result["buttons"] = item.data
         elif item.type == "template_markdown":
             result["template_markdown"] = item.data
+            result["ordered"].append(("text", str(item.data)))
         elif item.type == "template_buttons":
             result["template_buttons"] = item.data
     return result
