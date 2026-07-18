@@ -1,0 +1,972 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GScore 适配器</title>
+  <style>
+    :root {
+      --bg: #fffaf6;
+      --panel: #fffdfb;
+      --line: #f0d7c2;
+      --soft: #f6e7d8;
+      --text: #3d2b1f;
+      --muted: #9b7b63;
+      --primary: #ea8a52;
+      --primary-2: #f3a36f;
+      --green: #22b36a;
+      --red: #f05d5d;
+      --shadow: 0 8px 24px rgba(151, 91, 43, .10);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 205px 1fr;
+      height: 100vh;
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fffbf7;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--line);
+      background: #fffdfb;
+    }
+
+    .brand {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      height: 56px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      font-weight: 800;
+    }
+
+    .avatar,
+    .icon-box {
+      display: inline-grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: #ffe2c8;
+      font-size: 18px;
+      flex: 0 0 auto;
+    }
+
+    .avatar svg,
+    .icon-box svg,
+    .nav-icon {
+      width: 18px;
+      height: 18px;
+      color: currentColor;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .avatar {
+      color: var(--primary);
+    }
+
+    .icon-box {
+      color: var(--primary);
+    }
+
+    .nav-icon {
+      flex: 0 0 auto;
+    }
+
+    .bot-avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      object-fit: cover;
+      background: #ffe2c8;
+      flex: 0 0 auto;
+    }
+
+    .nav {
+      flex: 1;
+      padding: 16px 12px;
+    }
+
+    .nav-item {
+      display: flex;
+      gap: 9px;
+      align-items: center;
+      height: 36px;
+      padding: 0 12px;
+      margin-bottom: 8px;
+      color: #8b6b54;
+      border-radius: 7px;
+      font-size: 14px;
+      cursor: pointer;
+      user-select: none;
+      transition: background-color .18s ease, color .18s ease, transform .18s ease;
+    }
+
+    .nav-item:hover {
+      transform: translateX(2px);
+    }
+
+    .nav-item.active {
+      background: var(--soft);
+      color: var(--primary);
+    }
+
+    .footer {
+      padding: 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .running-pill {
+      height: 30px;
+      border-radius: 8px;
+      background: var(--soft);
+      color: #6d5a49;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 13px;
+      font-size: 13px;
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      background: var(--green);
+      border-radius: 50%;
+    }
+
+    .main {
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .topbar {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--line);
+      background: #fffdfb;
+    }
+
+    .topbar h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 800;
+    }
+
+    .github {
+      display: inline-grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      color: #92755e;
+      text-decoration: none;
+    }
+
+    .github svg {
+      width: 18px;
+      height: 18px;
+      fill: currentColor;
+    }
+
+    .content {
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      margin: 0;
+      padding: 22px;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    .content>form {
+      width: min(820px, 100%);
+      margin: 0 auto;
+      position: relative;
+    }
+
+    .page {
+      display: block;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(8px);
+      z-index: 0;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+
+    .page.active {
+      position: relative;
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+      z-index: 1;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      box-shadow: var(--shadow);
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+
+    .panel-head {
+      min-height: 45px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      font-weight: 800;
+      font-size: 14px;
+    }
+
+    .panel-head small {
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .form {
+      padding: 18px 16px 20px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px 16px;
+    }
+
+    .connection-grid {
+      grid-template-columns: 140px minmax(0, 1fr) 160px;
+    }
+
+    .field label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 7px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .field p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    input,
+    select {
+      width: 100%;
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0 11px;
+      outline: none;
+      background: #fff;
+      color: var(--text);
+    }
+
+    input:focus,
+    select:focus {
+      border-color: var(--primary-2);
+      box-shadow: 0 0 0 3px rgba(234, 138, 82, .12);
+    }
+
+    input[readonly] {
+      background: #fff8f1;
+      color: #7d604a;
+    }
+
+    .password-field {
+      position: relative;
+      display: flex;
+      align-items: center;
+      width: 100%;
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      transition: border-color .18s ease, box-shadow .18s ease;
+    }
+
+    .password-field:focus-within {
+      border-color: var(--primary-2);
+      box-shadow: 0 0 0 3px rgba(234, 138, 82, .12);
+    }
+
+    .password-field input,
+    .password-field input:focus {
+      height: 34px;
+      border: 0;
+      box-shadow: none;
+      padding-right: 42px;
+    }
+
+    .password-toggle {
+      position: absolute;
+      right: 6px;
+      top: 50%;
+      width: 28px;
+      height: 28px;
+      display: inline-grid;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: #92755e;
+      cursor: pointer;
+      transform: translateY(-50%);
+      transition: background-color .18s ease, color .18s ease, transform .18s ease;
+    }
+
+    .password-toggle:hover {
+      background: var(--soft);
+      color: var(--primary);
+      transform: translateY(-50%) scale(1.06);
+    }
+
+    .password-toggle:active {
+      transform: translateY(-50%) scale(.94);
+    }
+
+    .password-toggle svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+
+    .password-toggle .icon-eye-off {
+      position: absolute;
+      opacity: 0;
+      transform: scale(.72) rotate(-18deg);
+    }
+
+    .password-toggle.visible .icon-eye {
+      opacity: 0;
+      transform: scale(.72) rotate(18deg);
+    }
+
+    .password-toggle.visible .icon-eye-off {
+      opacity: 1;
+      transform: scale(1) rotate(0);
+    }
+
+    .bot-list {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+    }
+
+    .bot-card {
+      display: grid;
+      grid-template-columns: 34px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fffaf6;
+    }
+
+    .bot-title {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 800;
+      margin-bottom: 5px;
+    }
+
+    .bot-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    code {
+      color: #5f4635;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      height: 20px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: #8b6b54;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .tag.ok {
+      background: #dcfce9;
+      color: var(--green);
+    }
+
+    .tag.bad {
+      background: #ffe6e6;
+      color: var(--red);
+    }
+
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      display: inline-block;
+    }
+
+    .toggle input {
+      display: none;
+    }
+
+    .slider {
+      position: absolute;
+      inset: 0;
+      cursor: pointer;
+      background: #ead4c1;
+      border-radius: 999px;
+      transition: .2s ease;
+    }
+
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, .16);
+      transition: .2s ease;
+    }
+
+    .toggle input:checked+.slider {
+      background: var(--primary);
+    }
+
+    .toggle input:checked+.slider::before {
+      transform: translateX(20px);
+    }
+
+    .empty {
+      padding: 22px 16px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 13px;
+      border: 1px dashed var(--line);
+      border-radius: 9px;
+      background: #fffaf6;
+    }
+
+    .switch-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .switch {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: #fffaf6;
+    }
+
+    .switch input {
+      width: 17px;
+      height: 17px;
+      margin-top: 2px;
+      accent-color: var(--primary);
+    }
+
+    .switch strong {
+      font-size: 13px;
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .switch span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 7px;
+      height: 34px;
+      padding: 0 14px;
+      background: var(--soft);
+      color: #bd7447;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .btn.primary {
+      background: linear-gradient(135deg, var(--primary), var(--primary-2));
+      color: white;
+    }
+
+    .btn:disabled {
+      opacity: .55;
+      cursor: not-allowed;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      min-width: 180px;
+      padding: 12px 14px;
+      border-radius: 9px;
+      color: #fff;
+      background: #3d2b1f;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: .2s ease;
+      font-size: 13px;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 900px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        display: none;
+      }
+
+      .content {
+        width: 100%;
+        padding: 16px;
+      }
+
+      .grid,
+      .switch-row {
+        grid-template-columns: 1fr;
+      }
+
+      .bot-card {
+        grid-template-columns: 34px 1fr;
+      }
+
+      .bot-card .toggle {
+        grid-column: 2;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="avatar">🦊</span>
+        <span>GScore 适配器</span>
+      </div>
+      <nav class="nav">
+        <div class="nav-item active" data-page="bots">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="5" y="7" width="14" height="11" rx="3" />
+            <path d="M9 7V4" />
+            <path d="M15 7V4" />
+            <path d="M9 13h.01" />
+            <path d="M15 13h.01" />
+            <path d="M10 17h4" />
+          </svg>
+          <span>启用bot</span>
+        </div>
+        <div class="nav-item" data-page="adapter">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v3" />
+            <path d="M12 18v3" />
+            <path d="M4.22 5.22l2.12 2.12" />
+            <path d="M17.66 16.66l2.12 2.12" />
+            <path d="M3 12h3" />
+            <path d="M18 12h3" />
+            <path d="M4.22 18.78l2.12-2.12" />
+            <path d="M17.66 7.34l2.12-2.12" />
+            <circle cx="12" cy="12" r="4" />
+          </svg>
+          <span>基础配置</span>
+        </div>
+      </nav>
+      <div class="footer">
+        <div class="running-pill"><span class="dot"></span><span id="footerStatus">读取中</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h1 id="pageTitle">启用bot</h1>
+        <a class="github" href="https://github.com/Genshin-bots/gsuid_core" target="_blank" rel="noreferrer"
+          aria-label="GitHub">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 .5a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.04c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.83.58A12 12 0 0 0 12 .5Z" />
+          </svg>
+        </a>
+      </header>
+
+      <section class="content">
+        <form id="configForm">
+          <section id="page-bots" class="page active">
+            <section class="panel">
+              <div class="panel-head">
+                <span>启用bot</span>
+              </div>
+              <div id="botList" class="bot-list">
+                <div class="empty">正在读取框架 bot 配置...</div>
+              </div>
+              <div class="form">
+                <div class="actions">
+                  <button id="refreshBotsBtn" class="btn" type="button">刷新</button>
+                  <button id="saveBotsBtn" class="btn primary" type="submit">保存配置</button>
+                </div>
+              </div>
+            </section>
+          </section>
+
+          <section id="page-adapter" class="page">
+            <section class="panel">
+              <div class="panel-head">基础配置</div>
+              <div class="form">
+                <div class="grid connection-grid">
+                  <div class="field">
+                    <label>连接协议</label>
+                    <select name="use_ssl">
+                      <option value="false">ws://</option>
+                      <option value="true">wss://</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label>早柚IP</label>
+                    <input name="host" placeholder="127.0.0.1" />
+                  </div>
+                  <div class="field">
+                    <label>早柚端口</label>
+                    <input name="port" type="number" min="1" max="65535" placeholder="8765" />
+                  </div>
+                </div>
+
+                <div class="grid" style="margin-top: 14px;">
+                  <div class="field">
+                    <label>鉴权令牌</label>
+                    <div class="password-field">
+                      <input id="tokenInput" name="token" type="password" placeholder="WS_TOKEN，可留空" />
+                      <button id="toggleTokenBtn" class="password-toggle" type="button" aria-label="显示鉴权令牌"
+                        title="显示鉴权令牌">
+                        <svg class="icon-eye" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+                          <circle cx="12" cy="12" r="3" />
+                        </svg>
+                        <svg class="icon-eye-off" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M9.88 9.88A3 3 0 0 0 14.12 14.12" />
+                          <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c6.5 0 10 7 10 7a18.5 18.5 0 0 1-2.27 3.18" />
+                          <path d="M6.61 6.61C3.61 8.63 2 12 2 12s3.5 7 10 7a9.75 9.75 0 0 0 5.39-1.61" />
+                          <path d="M2 2l20 20" />
+                        </svg>
+                      </button>
+                    </div>
+                    <p>外网连接通常需要填写早柚的 <code>WS_TOKEN</code>，本机可信连接可留空。</p>
+                  </div>
+                  <div class="field">
+                    <label>重连间隔 reconnect_interval</label>
+                    <input name="reconnect_interval" type="number" min="1" max="3600" />
+                    <p>连接断开后的重试间隔秒数，避免频繁重连刷屏。</p>
+                  </div>
+                  <div class="field">
+                    <label>最大重连数</label>
+                    <input name="max_reconnect_attempts" type="number" min="0" step="1" />
+                    <p>默认 10 次，填 0 表示不限制并持续重连。</p>
+                  </div>
+                </div>
+
+                <div class="switch-row">
+                  <label class="switch">
+                    <input name="use_yunzai_user_id" type="checkbox" />
+                    <span><strong>使用 Yunzai 用户ID格式</strong>开启后将使用崽的官机user_id格式</span>
+                  </label>
+                </div>
+
+                <div class="actions">
+                  <button id="refreshAdapterBtn" class="btn" type="button">刷新</button>
+                  <button id="saveAdapterBtn" class="btn primary" type="submit">保存配置</button>
+                </div>
+              </div>
+            </section>
+          </section>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const API = '/api/ext/elainabot-gscore-adapter/config';
+    const PLATFORM_ID = 'ElainaBot';
+    const form = document.getElementById('configForm');
+    const toast = document.getElementById('toast');
+    let frameworkBots = [];
+    let enabledBots = new Set();
+    let connectedBots = [];
+    let currentPage = 'bots';
+
+    function getToken() {
+      return localStorage.getItem('token') || localStorage.getItem('auth_token') || sessionStorage.getItem('token') || '';
+    }
+
+    function headers() {
+      const token = getToken();
+      return {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
+    }
+
+    function showToast(text) {
+      toast.textContent = text;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2200);
+    }
+
+    function switchPage(page) {
+      currentPage = page;
+      document.querySelectorAll('.nav-item').forEach((item) => {
+        item.classList.toggle('active', item.dataset.page === page);
+      });
+      document.querySelectorAll('.page').forEach((item) => {
+        item.classList.toggle('active', item.id === `page-${page}`);
+      });
+      document.getElementById('pageTitle').textContent = page === 'bots' ? '启用bot' : '基础配置';
+    }
+
+    function fillForm(cfg) {
+      for (const [key, value] of Object.entries(cfg || {})) {
+        const el = form.elements[key];
+        if (!el) continue;
+        if (el.type === 'checkbox') el.checked = Boolean(value);
+        else if (key === 'use_ssl') el.value = String(Boolean(value));
+        else el.value = value ?? '';
+      }
+      if (form.elements.platform_id) form.elements.platform_id.value = PLATFORM_ID;
+    }
+
+    function renderBots(bots) {
+      const list = document.getElementById('botList');
+      const connectedSet = new Set(connectedBots || []);
+
+      if (!bots.length) {
+        list.innerHTML = '<div class="empty">未读取到框架 bot 配置，请检查 config/bot.yaml。</div>';
+        return;
+      }
+
+      list.innerHTML = bots.map((bot) => {
+        const disabled = bot.bot_id ? '' : 'disabled';
+        const checked = bot.bot_id && enabledBots.has(bot.bot_id) ? 'checked' : '';
+        const frameworkStatus = bot.framework_enabled ? '<span class="tag ok">框架已启用</span>' : '<span class="tag bad">框架已禁用</span>';
+        const forwardStatus = checked ? '<span class="tag ok">转发开启</span>' : '<span class="tag">转发关闭</span>';
+        const connectStatus = bot.bot_id && connectedSet.has(bot.bot_id) ? '<span class="tag ok">已连接</span>' : '<span class="tag">未连接</span>';
+        const qq = bot.robot_qq || '未配置';
+        const name = bot.name || bot.appid || qq || '未命名bot';
+        const avatar = bot.avatar_url || (bot.robot_qq ? `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(bot.robot_qq)}&s=100` : '');
+
+        return `
+          <label class="bot-card">
+            ${avatar ? `<img class="bot-avatar" src="${escapeHtml(avatar)}" alt="${escapeHtml(name)}" />` : '<span class="icon-box" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="7" width="14" height="11" rx="3" /><path d="M9 7V4" /><path d="M15 7V4" /><path d="M9 13h.01" /><path d="M15 13h.01" /><path d="M10 17h4" /></svg></span>'}
+            <span>
+              <span class="bot-title">
+                ${escapeHtml(name)}
+                ${frameworkStatus}
+                ${forwardStatus}
+                ${connectStatus}
+              </span>
+              <span class="bot-meta">
+                <span>QQ: <code>${escapeHtml(qq)}</code></span>
+                <span>appid: <code>${escapeHtml(bot.appid || '--')}</code></span>
+              </span>
+            </span>
+            <span class="toggle">
+              <input type="checkbox" data-bot-id="${escapeHtml(bot.bot_id || '')}" ${checked} ${disabled} />
+              <span class="slider"></span>
+            </span>
+          </label>
+        `;
+      }).join('');
+
+      list.querySelectorAll('input[data-bot-id]').forEach((input) => {
+        input.addEventListener('change', () => {
+          const botId = input.dataset.botId;
+          if (!botId) return;
+          if (input.checked) enabledBots.add(botId);
+          else enabledBots.delete(botId);
+          renderBots(frameworkBots);
+        });
+      });
+    }
+
+    function escapeHtml(value) {
+      const entityMap = {
+        '&': String.fromCharCode(38, 97, 109, 112, 59),
+        '<': String.fromCharCode(38, 108, 116, 59),
+        '>': String.fromCharCode(38, 103, 116, 59),
+        '"': String.fromCharCode(38, 113, 117, 111, 116, 59),
+        "'": String.fromCharCode(38, 35, 48, 51, 57, 59),
+      };
+      return String(value ?? '').replace(/[&<>"']/g, (char) => entityMap[char]);
+    }
+
+    function collectForm() {
+      return {
+        enabled_bots: Array.from(enabledBots),
+        host: form.elements.host.value.trim(),
+        port: Number(form.elements.port.value || 8765),
+        token: form.elements.token.value,
+        use_ssl: form.elements.use_ssl.value === 'true',
+        reconnect_interval: Number(form.elements.reconnect_interval.value || 5),
+        max_reconnect_attempts: Number(form.elements.max_reconnect_attempts.value || 10),
+        use_yunzai_user_id: form.elements.use_yunzai_user_id.checked,
+        send_unsupported_as_text: true,
+      };
+    }
+
+    function setFooter(payload) {
+      const cfg = payload.config || {};
+      const count = (cfg.enabled_bots || []).length;
+      document.getElementById('footerStatus').textContent = count ? `已启用 ${count} 个bot` : '未启用bot';
+    }
+
+    function applyData(data) {
+      frameworkBots = data.framework_bots || [];
+      connectedBots = data.connected_bots || [];
+      enabledBots = new Set((data.config && data.config.enabled_bots) || []);
+      fillForm(data.config || {});
+      renderBots(frameworkBots);
+      setFooter(data);
+    }
+
+    async function loadConfig() {
+      const resp = await fetch(API, { headers: headers() });
+      const data = await resp.json();
+      if (!data.success) throw new Error(data.error || '读取失败');
+      applyData(data);
+    }
+
+    async function saveConfig(event) {
+      event.preventDefault();
+      const buttons = [document.getElementById('saveBotsBtn'), document.getElementById('saveAdapterBtn')];
+      buttons.forEach((btn) => { btn.disabled = true; });
+      try {
+        const resp = await fetch(API, {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify(collectForm()),
+        });
+        const data = await resp.json();
+        if (!data.success) throw new Error(data.error || '保存失败');
+        applyData(data);
+        showToast(currentPage === 'bots' ? '启用bot已保存并应用' : '配置已保存并应用');
+      } catch (err) {
+        showToast(err.message || '保存失败');
+      } finally {
+        buttons.forEach((btn) => { btn.disabled = false; });
+      }
+    }
+
+    document.querySelectorAll('.nav-item[data-page]').forEach((item) => {
+      item.addEventListener('click', () => switchPage(item.dataset.page));
+    });
+    form.addEventListener('submit', saveConfig);
+    document.getElementById('refreshBotsBtn').addEventListener('click', () => loadConfig().then(() => showToast('已刷新')));
+    document.getElementById('refreshAdapterBtn').addEventListener('click', () => loadConfig().then(() => showToast('已刷新')));
+
+    document.getElementById('toggleTokenBtn').addEventListener('click', () => {
+      const input = document.getElementById('tokenInput');
+      const button = document.getElementById('toggleTokenBtn');
+      const visible = input.type === 'password';
+      input.type = visible ? 'text' : 'password';
+      button.classList.toggle('visible', visible);
+      button.setAttribute('aria-label', visible ? '隐藏鉴权令牌' : '显示鉴权令牌');
+      button.setAttribute('title', visible ? '隐藏鉴权令牌' : '显示鉴权令牌');
+    });
+
+    switchPage('bots');
+    loadConfig().catch(err => showToast(err.message || '读取失败'));
+  </script>
+</body>
+
+</html>
