@@ -360,7 +360,7 @@ async def gscore_adapter_command(event):
     group_id = _event_group_id(event)
     if cmd in {"群禁用", "群启用"}:
         if not group_id:
-            await event.reply("当前消息缺少群标识，无法操作")
+            await event.reply("❌ 请在群聊中使用此命令")
             return True
         disabled_groups = list(config.get("disabled_groups") or [])
         if cmd == "群禁用":
@@ -404,8 +404,6 @@ async def gscore_adapter_command(event):
 
 
 def _parse_adapter_command(event, config: Dict[str, Any]) -> str:
-    if not getattr(event, "is_group", False):
-        return ""
     content = str(getattr(event, "content", "") or "").strip()
     prefix = str(config.get("command_prefix") or DEFAULT_CONFIG["command_prefix"]).strip()
     if not prefix or not content.startswith(prefix):
