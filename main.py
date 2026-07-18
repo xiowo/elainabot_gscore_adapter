@@ -16,7 +16,7 @@ from core.base.config import cfg as global_config
 from core.base.logger import PLUGIN, get_logger, report_error
 from core.message._http import MSG_TYPE_MARKDOWN
 from core.message.response import extract_message_id, extract_reference_id
-from core.plugin.decorators import handler, on_load, on_unload
+from core.plugin.decorators import handler, interceptor, on_load, on_unload
 from core.plugin.web_pages import register_page, register_route, unregister_page, unregister_route
 
 from .client import GsCoreClient, decode_media_payload, split_send_content
@@ -44,6 +44,10 @@ DEFAULT_CONFIG = {
     "use_ssl": False,
     "reconnect_interval": 5,
     "max_reconnect_attempts": 10,
+    "command_prefix": "#早柚",
+    "unauthorized_silent": False,
+    "disabled_groups": [],
+    "blocked_users": [],
     "use_yunzai_user_id": False,
     "send_unsupported_as_text": True,
 }
@@ -170,11 +174,26 @@ def _normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
             "use_ssl": bool(data.get("use_ssl", DEFAULT_CONFIG["use_ssl"])),
             "reconnect_interval": _to_int(data.get("reconnect_interval"), DEFAULT_CONFIG["reconnect_interval"], 1, 3600),
             "max_reconnect_attempts": _to_int(data.get("max_reconnect_attempts"), DEFAULT_CONFIG["max_reconnect_attempts"], 0, 1000000),
+            "command_prefix": str(data.get("command_prefix") or DEFAULT_CONFIG["command_prefix"]).strip() or DEFAULT_CONFIG["command_prefix"],
+            "unauthorized_silent": bool(data.get("unauthorized_silent", DEFAULT_CONFIG["unauthorized_silent"])),
+            "disabled_groups": _normalize_str_list(data.get("disabled_groups")),
+            "blocked_users": _normalize_str_list(data.get("blocked_users")),
             "use_yunzai_user_id": bool(data.get("use_yunzai_user_id", DEFAULT_CONFIG["use_yunzai_user_id"])),
             "send_unsupported_as_text": bool(data.get("send_unsupported_as_text", DEFAULT_CONFIG["send_unsupported_as_text"])),
         }
     )
     return config
+
+
+def _normalize_str_list(value: Any) -> List[str]:
+    result = []
+    if isinstance(value, str):
+        value = value.replace("\r", "\n").replace(",", "\n").split("\n")
+    for item in value or []:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _to_int(value, default: int, minimum: int, maximum: int) -> int:
@@ -206,6 +225,13 @@ def _is_connected() -> bool:
 
 def _client_connected(client: GsCoreClient) -> bool:
     return bool(client and client.ws is not None and not getattr(client.ws, "closed", True))
+
+
+async def _restart_clients() -> Dict[str, Any]:
+    config = _normalize_config(ctx.read_config(filename="config.yaml") or DEFAULT_CONFIG)
+    ctx.save_config(config, filename="config.yaml")
+    await _apply_config(config)
+    return config
 
 
 def _get_framework_bot_map() -> Dict[str, Dict[str, Any]]:
@@ -305,6 +331,178 @@ def _get_event_bot_info(event, config: Dict[str, Any]) -> Optional[Dict[str, Any
     return None
 
 
+@interceptor(priority=10000)
+async def gscore_adapter_command(event):
+    config = _normalize_config(ctx.read_config(filename="config.yaml") or DEFAULT_CONFIG)
+    cmd = _parse_adapter_command(event, config)
+    if not cmd:
+        return False
+
+    if not _is_owner_event(event):
+        if not config.get("unauthorized_silent", False):
+            await event.reply("❌ 没有权限，仅主人可操作")
+        return True
+
+    if cmd == "help":
+        await event.reply(_build_help_text())
+        return True
+    if cmd == "status":
+        await event.reply(_build_status_text(config))
+        return True
+    if cmd == "version":
+        await event.reply(f"{__plugin_meta__['name']} v{__plugin_meta__['version']}")
+        return True
+    if cmd == "重连":
+        await _restart_clients()
+        await event.reply("已重新连接 GScore 服务")
+        return True
+
+    group_id = _event_group_id(event)
+    if cmd in {"群禁用", "群启用"}:
+        if not group_id:
+            await event.reply("当前消息缺少群标识，无法操作")
+            return True
+        disabled_groups = list(config.get("disabled_groups") or [])
+        if cmd == "群禁用":
+            if group_id not in disabled_groups:
+                disabled_groups.append(group_id)
+            config["disabled_groups"] = disabled_groups
+            _save_runtime_config(config)
+            await event.reply("🚫 本群早柚核心适配已关闭")
+        else:
+            if group_id in disabled_groups:
+                disabled_groups.remove(group_id)
+            config["disabled_groups"] = disabled_groups
+            _save_runtime_config(config)
+            await event.reply("✅ 本群早柚核心适配已启用")
+        return True
+
+    target_user = _extract_mentioned_user_id(event)
+    if not target_user:
+        prefix = str(config.get("command_prefix") or DEFAULT_CONFIG["command_prefix"])
+        await event.reply(f"❌ 请 @要拉黑的用户")
+        return True
+    blocked_users = list(config.get("blocked_users") or [])
+    if cmd == "拉黑":
+        if target_user in _owner_ids_for_event(event):
+            await event.reply("❌ 你不能拉黑你自己！")
+            return True
+        if target_user not in blocked_users:
+            blocked_users.append(target_user)
+        config["blocked_users"] = blocked_users
+        _save_runtime_config(config)
+        await event.reply(f"✅ 已拉黑用户 {_format_mention(target_user)}")
+    else:
+        if target_user in blocked_users:
+            blocked_users.remove(target_user)
+        config["blocked_users"] = blocked_users
+        _save_runtime_config(config)
+        await event.reply(f"✅ 已取消拉黑用户 {_format_mention(target_user)}")
+    return True
+
+
+def _parse_adapter_command(event, config: Dict[str, Any]) -> str:
+    if not getattr(event, "is_group", False):
+        return ""
+    content = str(getattr(event, "content", "") or "").strip()
+    prefix = str(config.get("command_prefix") or DEFAULT_CONFIG["command_prefix"]).strip()
+    if not prefix or not content.startswith(prefix):
+        return ""
+    rest = content[len(prefix) :].strip()
+    cmd = rest.split(None, 1)[0] if rest else ""
+    return cmd if cmd in {"help", "status", "version", "重连", "群禁用", "群启用", "拉黑", "取消拉黑"} else ""
+
+
+def _save_runtime_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = _normalize_config(config)
+    ctx.save_config(normalized, filename="config.yaml")
+    return normalized
+
+
+def _build_help_text() -> str:
+    prefix = _normalize_config(ctx.read_config(filename="config.yaml") or DEFAULT_CONFIG).get("command_prefix") or DEFAULT_CONFIG["command_prefix"]
+    return "\n".join(
+        [
+            "[= 常用命令 =]",
+            f"> `{prefix}`help - 显示帮助信息",
+            f"> `{prefix}`status - 查看连接器状态",
+            f"> `{prefix}`version - 查看插件版本",
+            f"> `{prefix}`重连 - 立即重连 GScore 服务",
+            f"\n",
+            f"[= 管理命令 =]",
+            f"> `{prefix}`群禁用 - 开启本群早柚核心",
+            f"> `{prefix}`群启用 - 关闭本群早柚核心",
+            f"> `{prefix}`拉黑 @用户 - 拉黑用户（不转发其消息）",
+            f"> `{prefix}`取消拉黑 @用户 - 取消拉黑用户",
+        ]
+    )
+
+
+def _build_status_text(config: Dict[str, Any]) -> str:
+    connected_bots = [bot_id for bot_id, client in _clients.items() if _client_connected(client)]
+    return "\n".join(
+        [
+            "[= 适配器状态 =]",
+            f"连接状态：{'已连接' if connected_bots else '未连接'}",
+            f"已启用 bot：{len(config.get('enabled_bots') or [])}",
+            f"已连接 bot：{len(connected_bots)}",
+            f"群禁用数量：{len(config.get('disabled_groups') or [])}",
+            f"拉黑用户数量：{len(config.get('blocked_users') or [])}",
+            f"运行时长：{int(time.time() - _started_at) if _started_at else 0} 秒",
+        ]
+    )
+
+
+def _owner_ids_for_event(event) -> List[str]:
+    try:
+        bot_cfg = global_config.get_bot_config(getattr(event, "appid", ""))
+    except Exception:
+        bot_cfg = None
+    return [str(item) for item in (bot_cfg or {}).get("owner_ids", [])]
+
+
+def _is_owner_event(event) -> bool:
+    return _event_user_id(event) in _owner_ids_for_event(event)
+
+
+def _event_user_id(event) -> str:
+    return str(
+        getattr(event, "member_openid", "")
+        or getattr(event, "raw_user_id", "")
+        or getattr(event, "user_id", "")
+        or ""
+    ).strip()
+
+
+def _event_group_id(event) -> str:
+    return str(
+        getattr(event, "group_openid", "")
+        or getattr(event, "group_id", "")
+        or getattr(event, "channel_id", "")
+        or ""
+    ).strip()
+
+
+def _extract_mentioned_user_id(event) -> str:
+    for mention in getattr(event, "mentions", None) or []:
+        mention_id = mention.get("id") or mention.get("user_id") or mention.get("openid") or mention.get("member_openid")
+        if mention_id:
+            return str(mention_id).strip()
+    return ""
+
+
+def _should_forward_event(event, config: Dict[str, Any]) -> bool:
+    if _is_owner_event(event):
+        return True
+    user_id = _event_user_id(event)
+    if user_id and user_id in set(config.get("blocked_users") or []):
+        return False
+    group_id = _event_group_id(event)
+    if group_id and group_id in set(config.get("disabled_groups") or []):
+        return False
+    return True
+
+
 @handler(
     r"^.*$",
     name="早柚适配器消息上报",
@@ -331,6 +529,8 @@ async def report_to_gscore(event, match):
         config = _normalize_config(ctx.read_config(filename="config.yaml") or DEFAULT_CONFIG)
         bot_info = _get_event_bot_info(event, config)
         if bot_info is None:
+            return
+        if not _should_forward_event(event, config):
             return
 
         msg = _event_to_receive(event)

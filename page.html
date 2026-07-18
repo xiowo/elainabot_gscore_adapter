@@ -753,12 +753,21 @@
                     <input name="max_reconnect_attempts" type="number" min="0" step="1" />
                     <p>默认 10 次，填 0 表示不限制并持续重连。</p>
                   </div>
+                  <div class="field">
+                    <label>群指令前缀</label>
+                    <input name="command_prefix" placeholder="#早柚" />
+                    <p>用于管理指令，例如 <code>#早柚status</code>。</p>
+                  </div>
                 </div>
 
                 <div class="switch-row">
                   <label class="switch">
                     <input name="use_yunzai_user_id" type="checkbox" />
                     <span><strong>使用 Yunzai 用户ID格式</strong>开启后将使用崽的官机user_id格式</span>
+                  </label>
+                  <label class="switch">
+                    <input name="unauthorized_silent" type="checkbox" />
+                    <span><strong>无权限静默</strong>开启后无权限用户使用早柚管理指令时不返回权限提示</span>
                   </label>
                 </div>
 
@@ -784,6 +793,8 @@
     let frameworkBots = [];
     let enabledBots = new Set();
     let connectedBots = [];
+    let disabledGroups = [];
+    let blockedUsers = [];
     let currentPage = 'bots';
 
     function getToken() {
@@ -899,6 +910,10 @@
         use_ssl: form.elements.use_ssl.value === 'true',
         reconnect_interval: Number(form.elements.reconnect_interval.value || 5),
         max_reconnect_attempts: Number(form.elements.max_reconnect_attempts.value || 10),
+        command_prefix: form.elements.command_prefix.value.trim() || '#早柚',
+        unauthorized_silent: form.elements.unauthorized_silent.checked,
+        disabled_groups: disabledGroups,
+        blocked_users: blockedUsers,
         use_yunzai_user_id: form.elements.use_yunzai_user_id.checked,
         send_unsupported_as_text: true,
       };
@@ -913,6 +928,8 @@
     function applyData(data) {
       frameworkBots = data.framework_bots || [];
       connectedBots = data.connected_bots || [];
+      disabledGroups = (data.config && data.config.disabled_groups) || [];
+      blockedUsers = (data.config && data.config.blocked_users) || [];
       enabledBots = new Set((data.config && data.config.enabled_bots) || []);
       fillForm(data.config || {});
       renderBots(frameworkBots);
