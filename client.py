@@ -60,6 +60,14 @@ class GsCoreClient:
             url += f"?token={self.token}"
         return url
 
+    @property
+    def safe_url(self) -> str:
+        scheme = "wss" if self.use_ssl else "ws"
+        url = f"{scheme}://{self.host}:{self.port}/ws/{self.route_bot_id}"
+        if self.token:
+            url += "?token=***"
+        return url
+
     async def start(self) -> None:
         if self._runner and not self._runner.done():
             return
@@ -102,6 +110,16 @@ class GsCoreClient:
             try:
                 await self._connect()
                 await self._run_pair()
+                if self._running:
+                    log.warning("早柚连接已断开: %s", self.safe_url)
+            except ConnectionClosed as exc:
+                if self._running:
+                    reconnect_attempts += 1
+                    log.warning("早柚连接已关闭: %s", exc)
+                    if self.max_reconnect_attempts > 0 and reconnect_attempts >= self.max_reconnect_attempts:
+                        log.error("早柚连接在 %s 次尝试后停止", reconnect_attempts)
+                        self._running = False
+                        break
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -113,6 +131,7 @@ class GsCoreClient:
                     break
             if self._running:
                 await asyncio.sleep(self.reconnect_interval)
+            self.ws = None
 
     async def _connect(self) -> None:
         self.ws = await websockets.client.connect(
@@ -121,19 +140,33 @@ class GsCoreClient:
             open_timeout=60,
             ping_timeout=60,
         )
-        log.info("已连接早柚: %s", self.url)
+        log.info("已连接早柚: %s", self.safe_url)
 
     async def _run_pair(self) -> None:
         recv_task = asyncio.create_task(self._recv_loop())
         send_task = asyncio.create_task(self._send_loop())
-        done, pending = await asyncio.wait(
-            [recv_task, send_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        for task in done:
-            task.result()
+        tasks = [recv_task, send_task]
+        try:
+            done, pending = await asyncio.wait(
+                tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, asyncio.CancelledError):
+                    continue
+                if isinstance(result, ConnectionClosed) and not self._running:
+                    continue
+                if isinstance(result, BaseException):
+                    raise result
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _send_loop(self) -> None:
         while self._running:
