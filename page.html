@@ -189,6 +189,31 @@
       font-weight: 800;
     }
 
+    .mobile-tabs {
+      display: none;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fffdfb;
+    }
+
+    .mobile-tab {
+      flex: 1;
+      height: 36px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: #8b6b54;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .mobile-tab.active {
+      background: var(--soft);
+      color: var(--primary);
+    }
+
     .github {
       display: inline-grid;
       place-items: center;
@@ -571,11 +596,27 @@
       cursor: not-allowed;
     }
 
-    .actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-      margin-top: 18px;
+    .save-dock {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 20;
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+
+    .save-dock.hidden {
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+    }
+
+    .save-dock .btn {
+      height: 38px;
+      padding: 0 18px;
+      box-shadow: var(--shadow);
     }
 
     .toast {
@@ -609,6 +650,14 @@
         display: none;
       }
 
+      .topbar {
+        padding: 0 16px;
+      }
+
+      .mobile-tabs {
+        display: flex;
+      }
+
       .content {
         width: 100%;
         padding: 16px;
@@ -625,6 +674,11 @@
 
       .bot-card .toggle {
         grid-column: 2;
+      }
+
+      .save-dock {
+        right: 16px;
+        bottom: 16px;
       }
     }
   </style>
@@ -672,7 +726,7 @@
     <main class="main">
       <header class="topbar">
         <h1 id="pageTitle">启用bot</h1>
-        <a class="github" href="https://github.com/Genshin-bots/gsuid_core" target="_blank" rel="noreferrer"
+        <a class="github" href="https://github.com/xiowo/elainabot_gscore_adapter" target="_blank" rel="noreferrer"
           aria-label="GitHub">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path
@@ -681,21 +735,21 @@
         </a>
       </header>
 
+      <nav class="mobile-tabs" aria-label="页面切换">
+        <button class="mobile-tab active" type="button" data-page="bots">启用bot</button>
+        <button class="mobile-tab" type="button" data-page="adapter">基础配置</button>
+      </nav>
+
       <section class="content">
         <form id="configForm">
           <section id="page-bots" class="page active">
             <section class="panel">
               <div class="panel-head">
                 <span>启用bot</span>
+                <button id="refreshBotsBtn" class="btn" type="button">刷新</button>
               </div>
               <div id="botList" class="bot-list">
                 <div class="empty">正在读取框架 bot 配置...</div>
-              </div>
-              <div class="form">
-                <div class="actions">
-                  <button id="refreshBotsBtn" class="btn" type="button">刷新</button>
-                  <button id="saveBotsBtn" class="btn primary" type="submit">保存配置</button>
-                </div>
               </div>
             </section>
           </section>
@@ -770,14 +824,12 @@
                     <span><strong>无权限静默</strong>开启后非主人使用早柚管理指令时不返回无权限提示</span>
                   </label>
                 </div>
-
-                <div class="actions">
-                  <button id="refreshAdapterBtn" class="btn" type="button">刷新</button>
-                  <button id="saveAdapterBtn" class="btn primary" type="submit">保存配置</button>
-                </div>
               </div>
             </section>
           </section>
+          <div id="saveDock" class="save-dock hidden">
+            <button id="saveConfigBtn" class="btn primary" type="submit">保存配置</button>
+          </div>
         </form>
       </section>
     </main>
@@ -787,7 +839,6 @@
 
   <script>
     const API = '/api/ext/elainabot-gscore-adapter/config';
-    const PLATFORM_ID = 'ElainaBot';
     const form = document.getElementById('configForm');
     const toast = document.getElementById('toast');
     let frameworkBots = [];
@@ -796,6 +847,9 @@
     let disabledGroups = [];
     let blockedUsers = [];
     let currentPage = 'bots';
+    let savedConfigSnapshot = '';
+    let isDirty = false;
+    let isLoading = false;
 
     function getToken() {
       return localStorage.getItem('token') || localStorage.getItem('auth_token') || sessionStorage.getItem('token') || '';
@@ -817,7 +871,7 @@
 
     function switchPage(page) {
       currentPage = page;
-      document.querySelectorAll('.nav-item').forEach((item) => {
+      document.querySelectorAll('[data-page]').forEach((item) => {
         item.classList.toggle('active', item.dataset.page === page);
       });
       document.querySelectorAll('.page').forEach((item) => {
@@ -834,7 +888,6 @@
         else if (key === 'use_ssl') el.value = String(Boolean(value));
         else el.value = value ?? '';
       }
-      if (form.elements.platform_id) form.elements.platform_id.value = PLATFORM_ID;
     }
 
     function renderBots(bots) {
@@ -886,6 +939,7 @@
           if (input.checked) enabledBots.add(botId);
           else enabledBots.delete(botId);
           renderBots(frameworkBots);
+          updateDirtyState();
         });
       });
     }
@@ -903,7 +957,7 @@
 
     function collectForm() {
       return {
-        enabled_bots: Array.from(enabledBots),
+        enabled_bots: Array.from(enabledBots).sort(),
         host: form.elements.host.value.trim(),
         port: Number(form.elements.port.value || 8765),
         token: form.elements.token.value,
@@ -919,34 +973,59 @@
       };
     }
 
+    function configSnapshot(config) {
+      return JSON.stringify({
+        ...config,
+        enabled_bots: [...(config.enabled_bots || [])].sort(),
+        disabled_groups: [...(config.disabled_groups || [])].sort(),
+        blocked_users: [...(config.blocked_users || [])].sort(),
+      });
+    }
+
+    function updateDirtyState() {
+      if (isLoading || !savedConfigSnapshot) return;
+      isDirty = configSnapshot(collectForm()) !== savedConfigSnapshot;
+      document.getElementById('saveDock').classList.toggle('hidden', !isDirty);
+    }
+
+    function resetDirtyState() {
+      savedConfigSnapshot = configSnapshot(collectForm());
+      isDirty = false;
+      document.getElementById('saveDock').classList.add('hidden');
+    }
+
     function setFooter(payload) {
-      const cfg = payload.config || {};
-      const count = (cfg.enabled_bots || []).length;
+      const count = enabledBots.size;
       document.getElementById('footerStatus').textContent = count ? `已启用 ${count} 个bot` : '未启用bot';
     }
 
-    function applyData(data) {
+    function applyData(data, { resetForm = true } = {}) {
       frameworkBots = data.framework_bots || [];
       connectedBots = data.connected_bots || [];
-      disabledGroups = (data.config && data.config.disabled_groups) || [];
-      blockedUsers = (data.config && data.config.blocked_users) || [];
-      enabledBots = new Set((data.config && data.config.enabled_bots) || []);
-      fillForm(data.config || {});
+      if (resetForm) {
+        disabledGroups = (data.config && data.config.disabled_groups) || [];
+        blockedUsers = (data.config && data.config.blocked_users) || [];
+        enabledBots = new Set((data.config && data.config.enabled_bots) || []);
+        isLoading = true;
+        fillForm(data.config || {});
+        isLoading = false;
+        resetDirtyState();
+      }
       renderBots(frameworkBots);
       setFooter(data);
     }
 
-    async function loadConfig() {
+    async function loadConfig(options = {}) {
       const resp = await fetch(API, { headers: headers() });
       const data = await resp.json();
       if (!data.success) throw new Error(data.error || '读取失败');
-      applyData(data);
+      applyData(data, options);
     }
 
     async function saveConfig(event) {
       event.preventDefault();
-      const buttons = [document.getElementById('saveBotsBtn'), document.getElementById('saveAdapterBtn')];
-      buttons.forEach((btn) => { btn.disabled = true; });
+      const saveButton = document.getElementById('saveConfigBtn');
+      saveButton.disabled = true;
       try {
         const resp = await fetch(API, {
           method: 'POST',
@@ -955,21 +1034,24 @@
         });
         const data = await resp.json();
         if (!data.success) throw new Error(data.error || '保存失败');
-        applyData(data);
+        applyData(data, { resetForm: true });
         showToast(currentPage === 'bots' ? '启用bot已保存并应用' : '配置已保存并应用');
       } catch (err) {
         showToast(err.message || '保存失败');
       } finally {
-        buttons.forEach((btn) => { btn.disabled = false; });
+        saveButton.disabled = false;
       }
     }
 
-    document.querySelectorAll('.nav-item[data-page]').forEach((item) => {
+    document.querySelectorAll('[data-page]').forEach((item) => {
       item.addEventListener('click', () => switchPage(item.dataset.page));
     });
     form.addEventListener('submit', saveConfig);
-    document.getElementById('refreshBotsBtn').addEventListener('click', () => loadConfig().then(() => showToast('已刷新')));
-    document.getElementById('refreshAdapterBtn').addEventListener('click', () => loadConfig().then(() => showToast('已刷新')));
+    form.addEventListener('input', updateDirtyState);
+    form.addEventListener('change', updateDirtyState);
+    document.getElementById('refreshBotsBtn').addEventListener('click', () => {
+      loadConfig({ resetForm: !isDirty }).then(() => showToast('已刷新')).catch(err => showToast(err.message || '刷新失败'));
+    });
 
     document.getElementById('toggleTokenBtn').addEventListener('click', () => {
       const input = document.getElementById('tokenInput');
@@ -982,7 +1064,7 @@
     });
 
     switchPage('bots');
-    loadConfig().catch(err => showToast(err.message || '读取失败'));
+    loadConfig({ resetForm: true }).catch(err => showToast(err.message || '读取失败'));
   </script>
 </body>
 
