@@ -705,7 +705,32 @@ async def _event_to_content(event, config: Dict[str, Any], bot_info: Dict[str, A
         if converted:
             content.append(converted)
 
+    seen_image_urls = {str(item.data) for item in content if item.type == "image" and item.data}
+    for image_url in _extract_msg_element_image_urls(getattr(event, "msg_elements", None)):
+        if image_url in seen_image_urls:
+            continue
+        content.append(Message("image", image_url))
+        seen_image_urls.add(image_url)
+
     return content
+
+
+def _extract_msg_element_image_urls(msg_elements: Any) -> List[str]:
+    image_urls: List[str] = []
+    if not isinstance(msg_elements, list):
+        return image_urls
+
+    for element in msg_elements:
+        if not isinstance(element, dict):
+            continue
+        for attachment in element.get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            content_type = str(attachment.get("content_type") or "").lower()
+            url = str(attachment.get("url") or "").strip()
+            if url and "image" in content_type and url not in image_urls:
+                image_urls.append(url)
+    return image_urls
 
 
 def _event_to_meta(event, config: Dict[str, Any], self_id: str) -> Optional[Message]:
