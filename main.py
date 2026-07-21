@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+from collections import OrderedDict
 from io import BytesIO
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from aiohttp import web
@@ -55,9 +56,10 @@ DEFAULT_CONFIG = {
 
 PAGE_KEY = "elainabot-gscore-adapter"
 CONFIG_API = "/api/ext/elainabot-gscore-adapter/config"
+EVENT_CACHE_TTL = 5 * 60
 
 _clients: Dict[str, GsCoreClient] = {}
-_last_events: Dict[str, Any] = {}
+_last_events: "OrderedDict[str, Tuple[float, Any]]" = OrderedDict()
 _started_at = 0.0
 _manual_reconnecting = False
 
@@ -551,6 +553,41 @@ def _should_forward_event(event, config: Dict[str, Any]) -> bool:
     return True
 
 
+def _cache_event(msg_id: str, event: Any) -> None:
+    msg_id = str(msg_id or "").strip()
+    if not msg_id:
+        return
+    now = time.time()
+    _last_events[msg_id] = (now, event)
+    _last_events.move_to_end(msg_id)
+    _prune_event_cache(now)
+
+
+def _get_cached_event(msg_id: Any) -> Optional[Any]:
+    msg_id = str(msg_id or "").strip()
+    if not msg_id:
+        return None
+    cached = _last_events.get(msg_id)
+    if cached is None:
+        return None
+    cached_at, event = cached
+    if time.time() - cached_at > EVENT_CACHE_TTL:
+        _last_events.pop(msg_id, None)
+        return None
+    _last_events.move_to_end(msg_id)
+    return event
+
+
+def _prune_event_cache(now: Optional[float] = None) -> None:
+    now = time.time() if now is None else now
+    expired_before = now - EVENT_CACHE_TTL
+    while _last_events:
+        _, (cached_at, _) = next(iter(_last_events.items()))
+        if cached_at >= expired_before:
+            break
+        _last_events.popitem(last=False)
+
+
 @handler(
     r"^.*$",
     name="早柚适配器消息上报",
@@ -589,8 +626,7 @@ async def report_to_gscore(event, match):
         if client is None:
             return
 
-        if msg.msg_id:
-            _last_events[msg.msg_id] = event
+        _cache_event(msg.msg_id, event)
         await client.input(msg)
     except Exception as exc:
         report_error(
@@ -765,7 +801,7 @@ def _get_user_pm(event) -> int:
 
 
 async def _send_to_elaina(msg: MessageSend):
-    target_event = _last_events.get(msg.msg_id)
+    target_event = _get_cached_event(msg.msg_id)
     parts = split_send_content(msg.content)
     recall_ids: List[str] = []
 
@@ -856,34 +892,32 @@ async def _send_with_sender(msg: MessageSend, parts: Dict[str, Any]):
         if parts["image"]:
             markdown = await _compose_ordered_markdown(parts, sender=sender)
             if markdown:
-                log.info("通过 sender 主动发送群图床 Markdown 图片: target_id=%s msg_id=%s", msg.target_id, msg.msg_id)
+                log.info("通过 sender 主动发送群图床 Markdown 图片: target_id=%s", msg.target_id)
                 return await sender.send_to_group(
                     msg.target_id,
                     markdown,
-                    msg_id=msg.msg_id or None,
                     buttons=_normalize_buttons(parts["buttons"]),
                     msg_type=MSG_TYPE_MARKDOWN,
                     skip_suffix=True,
                 )
-            log.warning("群图片上传图床失败，回退文本发送: target_id=%s msg_id=%s", msg.target_id, msg.msg_id)
-        log.info("通过 sender 主动发送群文本: target_id=%s msg_id=%s", msg.target_id, msg.msg_id)
-        return await sender.send_to_group(msg.target_id, text or " ", msg_id=msg.msg_id or None)
+            log.warning("群图片上传图床失败，回退文本发送: target_id=%s", msg.target_id)
+        log.info("通过 sender 主动发送群文本: target_id=%s", msg.target_id)
+        return await sender.send_to_group(msg.target_id, text or " ")
     if msg.target_type == "direct":
         if parts["image"]:
             markdown = await _compose_ordered_markdown(parts, sender=sender)
             if markdown:
-                log.info("通过 sender 主动发送私聊图床 Markdown 图片: target_id=%s msg_id=%s", msg.target_id, msg.msg_id)
+                log.info("通过 sender 主动发送私聊图床 Markdown 图片: target_id=%s", msg.target_id)
                 return await sender.send_to_user(
                     msg.target_id,
                     markdown,
-                    msg_id=msg.msg_id or None,
                     buttons=_normalize_buttons(parts["buttons"]),
                     msg_type=MSG_TYPE_MARKDOWN,
                     skip_suffix=True,
                 )
-            log.warning("私聊图片上传图床失败，回退文本发送: target_id=%s msg_id=%s", msg.target_id, msg.msg_id)
-        log.info("通过 sender 主动发送私聊文本: target_id=%s msg_id=%s", msg.target_id, msg.msg_id)
-        return await sender.send_to_user(msg.target_id, text or " ", msg_id=msg.msg_id or None)
+            log.warning("私聊图片上传图床失败，回退文本发送: target_id=%s", msg.target_id)
+        log.info("通过 sender 主动发送私聊文本: target_id=%s", msg.target_id)
+        return await sender.send_to_user(msg.target_id, text or " ")
     if msg.target_type in {"channel", "sub_channel"}:
         return await sender.send_to_channel(msg.target_id, text or " ")
     return None
@@ -1175,7 +1209,7 @@ async def _delete_message(msg: MessageSend, data: Dict[str, Any]):
     message_id = data.get("message_id") if isinstance(data, dict) else None
     if not message_id:
         return
-    target_event = _last_events.get(str(message_id)) or _last_events.get(msg.msg_id)
+    target_event = _get_cached_event(str(message_id)) or _get_cached_event(msg.msg_id)
     if target_event is not None:
         await target_event.recall(message_id=str(message_id))
     else:
