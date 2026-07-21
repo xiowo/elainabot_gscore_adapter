@@ -812,6 +812,11 @@
                     <input name="command_prefix" placeholder="#早柚" />
                     <p>用于管理指令，例如 <code>#早柚status</code>。</p>
                   </div>
+                  <div class="field">
+                    <label>私聊 JSON 文件上限 KB</label>
+                    <input name="private_json_file_max_size_kb" type="number" min="1" step="1" placeholder="2048" />
+                    <p>开启转换后生效，超过该大小将忽略并提示文件过大。</p>
+                  </div>
                 </div>
 
                 <div class="switch-row">
@@ -822,6 +827,10 @@
                   <label class="switch">
                     <input name="unauthorized_silent" type="checkbox" />
                     <span><strong>无权限静默</strong>开启后非主人使用早柚管理指令时不返回无权限提示</span>
+                  </label>
+                  <label class="switch">
+                    <input name="private_json_file_to_base64" type="checkbox" />
+                    <span><strong>私聊 JSON 文件转 Base64</strong>开启后私聊收到 JSON 文件会以 base64 发送给早柚</span>
                   </label>
                 </div>
               </div>
@@ -970,6 +979,8 @@
         blocked_users: blockedUsers,
         use_yunzai_user_id: form.elements.use_yunzai_user_id.checked,
         send_unsupported_as_text: true,
+        private_json_file_to_base64: form.elements.private_json_file_to_base64.checked,
+        private_json_file_max_size_kb: Number(form.elements.private_json_file_max_size_kb.value || 2048),
       };
     }
 

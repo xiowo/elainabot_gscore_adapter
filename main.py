@@ -10,7 +10,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-from aiohttp import web
+from aiohttp import ClientError, ClientSession, web
 from PIL import Image, UnidentifiedImageError
 
 import core.plugin.context as _ctx_mod
@@ -28,7 +28,7 @@ __plugin_meta__ = {
     "name": "ElainaBot 早柚适配器",
     "author": "MortalCat",
     "description": "一个适用于ElainaBot的GScore适配器 ",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "license": "MIT",
 }
 
@@ -52,6 +52,8 @@ DEFAULT_CONFIG = {
     "blocked_users": [],
     "use_yunzai_user_id": False,
     "send_unsupported_as_text": True,
+    "private_json_file_to_base64": False,
+    "private_json_file_max_size_kb": 2048,
 }
 
 PAGE_KEY = "elainabot-gscore-adapter"
@@ -184,6 +186,15 @@ def _normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
             "blocked_users": _normalize_str_list(data.get("blocked_users")),
             "use_yunzai_user_id": bool(data.get("use_yunzai_user_id", DEFAULT_CONFIG["use_yunzai_user_id"])),
             "send_unsupported_as_text": bool(data.get("send_unsupported_as_text", DEFAULT_CONFIG["send_unsupported_as_text"])),
+            "private_json_file_to_base64": bool(
+                data.get("private_json_file_to_base64", DEFAULT_CONFIG["private_json_file_to_base64"])
+            ),
+            "private_json_file_max_size_kb": _to_int(
+                data.get("private_json_file_max_size_kb"),
+                DEFAULT_CONFIG["private_json_file_max_size_kb"],
+                1,
+                1024 * 1024,
+            ),
         }
     )
     return config
@@ -618,7 +629,7 @@ async def report_to_gscore(event, match):
         if not _should_forward_event(event, config):
             return
 
-        msg = _event_to_receive(event)
+        msg = await _event_to_receive(event)
         if msg is None:
             return
 
@@ -637,13 +648,13 @@ async def report_to_gscore(event, match):
         )
 
 
-def _event_to_receive(event) -> Optional[MessageReceive]:
+async def _event_to_receive(event) -> Optional[MessageReceive]:
     config = _normalize_config(ctx.read_config(filename="config.yaml") or DEFAULT_CONFIG)
     bot_info = _get_event_bot_info(event, config)
     if not bot_info:
         return None
 
-    content = _event_to_content(event, config, bot_info)
+    content = await _event_to_content(event, config, bot_info)
     self_id = str(bot_info.get("robot_qq") or event.appid or "")
     meta = _event_to_meta(event, config, self_id)
     if meta:
@@ -669,7 +680,7 @@ def _event_to_receive(event) -> Optional[MessageReceive]:
     )
 
 
-def _event_to_content(event, config: Dict[str, Any], bot_info: Dict[str, Any]) -> List[Message]:
+async def _event_to_content(event, config: Dict[str, Any], bot_info: Dict[str, Any]) -> List[Message]:
     content: List[Message] = []
 
     for mention in getattr(event, "mentions", None) or []:
@@ -690,7 +701,7 @@ def _event_to_content(event, config: Dict[str, Any], bot_info: Dict[str, Any]) -
         content.append(Message("image", str(image_url)))
 
     for attachment in getattr(event, "attachments", None) or []:
-        converted = _attachment_to_message(attachment)
+        converted = await _attachment_to_message(event, attachment, config)
         if converted:
             content.append(converted)
 
@@ -720,7 +731,7 @@ def _format_outgoing_user_id(user_id: Any, config: Dict[str, Any], self_id: str)
     return f"{bot_id}:{user_id}"
 
 
-def _attachment_to_message(attachment: Dict[str, Any]) -> Optional[Message]:
+async def _attachment_to_message(event, attachment: Dict[str, Any], config: Dict[str, Any]) -> Optional[Message]:
     url = attachment.get("url")
     file_name = attachment.get("filename") or "file"
     content_type = str(attachment.get("content_type") or "")
@@ -731,7 +742,88 @@ def _attachment_to_message(attachment: Dict[str, Any]) -> Optional[Message]:
         return Message("image", str(url))
     if "audio" in content_type or "voice" in content_type:
         return Message("record", str(url))
+    if _should_convert_private_json_file(event, attachment, config):
+        limit_kb = int(config.get("private_json_file_max_size_kb") or DEFAULT_CONFIG["private_json_file_max_size_kb"])
+        limit_bytes = limit_kb * 1024
+        declared_size = _attachment_size(attachment)
+        if declared_size is not None and declared_size > limit_bytes:
+            await _reply_file_too_large(event, file_name, declared_size, limit_kb)
+            return None
+
+        payload = await _download_file_as_base64(str(url), limit_bytes)
+        if payload is None:
+            await _reply_file_too_large(event, file_name, None, limit_kb)
+            return None
+        log.info("私聊 JSON 文件准备上报: file_name=%s base64_size=%s", file_name, len(payload))
+        return Message("file", f"{file_name}|{payload}")
     return Message("file", f"{file_name}|{url}")
+
+
+def _should_convert_private_json_file(event, attachment: Dict[str, Any], config: Dict[str, Any]) -> bool:
+    if not config.get("private_json_file_to_base64", False):
+        return False
+    if _get_user_type(event) != "direct":
+        return False
+    file_name = str(attachment.get("filename") or "").lower()
+    content_type = str(attachment.get("content_type") or "").lower()
+    return file_name.endswith(".json") or "json" in content_type
+
+
+def _attachment_size(attachment: Dict[str, Any]) -> Optional[int]:
+    value = attachment.get("size")
+    if value in (None, ""):
+        return None
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return None
+    return size if size >= 0 else None
+
+
+async def _download_file_as_base64(url: str, limit_bytes: int) -> Optional[str]:
+    if not url.startswith(("http://", "https://")):
+        return None
+    try:
+        async with ClientSession() as session:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                content_length = resp.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        if int(content_length) > limit_bytes:
+                            return None
+                    except ValueError:
+                        pass
+
+                chunks: List[bytes] = []
+                downloaded = 0
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    downloaded += len(chunk)
+                    if downloaded > limit_bytes:
+                        return None
+                    chunks.append(chunk)
+    except (ClientError, asyncio.TimeoutError, ValueError) as exc:
+        log.warning("下载私聊 JSON 文件失败: url=%s error=%s", url, exc)
+        return None
+
+    raw = b"".join(chunks)
+    payload = base64.b64encode(raw).decode("ascii")
+    log.info("私聊 JSON 文件下载完成: raw_size=%s base64_size=%s", len(raw), len(payload))
+    return payload
+
+
+async def _reply_file_too_large(event, file_name: str, size: Optional[int], limit_kb: int) -> None:
+    size_text = f"，当前约 {_format_file_size(size)}" if size is not None else ""
+    try:
+        await event.reply(f"❌ 文件过大{size_text}，最大支持{limit_kb}KB。")
+    except Exception as exc:
+        log.warning("发送文件过大提示失败: %s", exc)
+
+
+def _format_file_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.2f}MB"
+    return f"{size / 1024:.2f}KB"
 
 
 def _get_user_type(event) -> str:
