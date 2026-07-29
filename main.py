@@ -28,7 +28,7 @@ __plugin_meta__ = {
     "name": "ElainaBot 早柚适配器",
     "author": "MortalCat",
     "description": "一个适用于ElainaBot的GScore适配器 ",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "license": "MIT",
 }
 
@@ -684,9 +684,7 @@ async def _event_to_content(event, config: Dict[str, Any], bot_info: Dict[str, A
     content: List[Message] = []
 
     for mention in getattr(event, "mentions", None) or []:
-        mention_id = mention.get("id")
-        if mention_id:
-            content.append(Message("at", str(mention_id)))
+        _append_mention_content(content, mention)
 
     reply_id = str(getattr(event, "message_reference_id", "") or "")
     if reply_id:
@@ -713,6 +711,24 @@ async def _event_to_content(event, config: Dict[str, Any], bot_info: Dict[str, A
         seen_image_urls.add(image_url)
 
     return content
+
+
+def _is_self_mention(mention: Any) -> bool:
+    return isinstance(mention, dict) and mention.get("is_you") is True
+
+
+def _mention_openid(mention: Any) -> str:
+    if not isinstance(mention, dict):
+        return ""
+    return str(mention.get("id") or mention.get("member_openid") or "").strip()
+
+
+def _append_mention_content(content: List[Message], mention: Any) -> None:
+    if _is_self_mention(mention):
+        return
+    mention_id = _mention_openid(mention)
+    if mention_id:
+        content.append(Message("at", mention_id))
 
 
 def _extract_msg_element_image_urls(msg_elements: Any) -> List[str]:
