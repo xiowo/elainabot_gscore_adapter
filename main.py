@@ -6,6 +6,7 @@ import binascii
 from collections import OrderedDict
 from io import BytesIO
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -59,6 +60,10 @@ DEFAULT_CONFIG = {
 PAGE_KEY = "elainabot-gscore-adapter"
 CONFIG_API = "/api/ext/elainabot-gscore-adapter/config"
 EVENT_CACHE_TTL = 5 * 60
+INLINE_ATTACHMENT_PATTERN = re.compile(
+    r'<attachmentType="(?P<content_type>[^"]+)"[^>]*>\s*<(?P<url>https?://[^>\s]+)>',
+    re.IGNORECASE,
+)
 
 _clients: Dict[str, GsCoreClient] = {}
 _last_events: "OrderedDict[str, Tuple[float, Any]]" = OrderedDict()
@@ -682,35 +687,67 @@ async def _event_to_receive(event) -> Optional[MessageReceive]:
 
 async def _event_to_content(event, config: Dict[str, Any], bot_info: Dict[str, Any]) -> List[Message]:
     content: List[Message] = []
+    seen_image_urls: set[str] = set()
 
     for mention in getattr(event, "mentions", None) or []:
         _append_mention_content(content, mention)
 
+    text = event.content if event.content is not None else event.raw_content
+    text, inline_image_urls = _extract_inline_attachment_images(text)
+
     reply_id = str(getattr(event, "message_reference_id", "") or "")
-    if reply_id:
+    if reply_id and not inline_image_urls:
         content.append(Message("reply", reply_id))
 
-    text = event.content if event.content is not None else event.raw_content
     if text:
         content.append(Message("text", str(text)))
 
+    for image_url in inline_image_urls:
+        _append_unique_image(content, seen_image_urls, image_url)
+
     image_url = getattr(event, "image_url", "")
     if image_url:
-        content.append(Message("image", str(image_url)))
+        _append_unique_image(content, seen_image_urls, str(image_url))
 
     for attachment in getattr(event, "attachments", None) or []:
         converted = await _attachment_to_message(event, attachment, config)
         if converted:
+            if converted.type == "image":
+                _append_unique_image(content, seen_image_urls, str(converted.data or ""))
+                continue
             content.append(converted)
 
-    seen_image_urls = {str(item.data) for item in content if item.type == "image" and item.data}
     for image_url in _extract_msg_element_image_urls(getattr(event, "msg_elements", None)):
-        if image_url in seen_image_urls:
-            continue
-        content.append(Message("image", image_url))
-        seen_image_urls.add(image_url)
+        _append_unique_image(content, seen_image_urls, image_url)
 
     return content
+
+
+def _extract_inline_attachment_images(text: Any) -> Tuple[str, List[str]]:
+    """提取 QQ 文本内联附件标记中的图片 URL，并从文本中移除该标记。"""
+    if not text:
+        return "", []
+
+    raw_text = str(text)
+    image_urls: List[str] = []
+
+    def _replace(match: re.Match) -> str:
+        content_type = str(match.group("content_type") or "").lower()
+        url = str(match.group("url") or "").strip()
+        if url and "image" in content_type and url not in image_urls:
+            image_urls.append(url)
+        return ""
+
+    cleaned = INLINE_ATTACHMENT_PATTERN.sub(_replace, raw_text).strip()
+    return cleaned, image_urls
+
+
+def _append_unique_image(content: List[Message], seen_image_urls: set[str], image_url: str) -> None:
+    image_url = str(image_url or "").strip()
+    if not image_url or image_url in seen_image_urls:
+        return
+    content.append(Message("image", image_url))
+    seen_image_urls.add(image_url)
 
 
 def _is_self_mention(mention: Any) -> bool:
