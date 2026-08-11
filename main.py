@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-from collections import OrderedDict
 from io import BytesIO
 import os
 import re
@@ -66,7 +65,7 @@ INLINE_ATTACHMENT_PATTERN = re.compile(
 )
 
 _clients: Dict[str, GsCoreClient] = {}
-_last_events: "OrderedDict[str, Tuple[float, Any]]" = OrderedDict()
+_last_events: Dict[str, Tuple[str, float, Any]] = {}
 _started_at = 0.0
 _manual_reconnecting = False
 
@@ -569,39 +568,59 @@ def _should_forward_event(event, config: Dict[str, Any]) -> bool:
     return True
 
 
-def _cache_event(msg_id: str, event: Any) -> None:
-    msg_id = str(msg_id or "").strip()
-    if not msg_id:
+def _cache_event(msg: MessageReceive, event: Any) -> None:
+    msg_id = str(getattr(msg, "msg_id", "") or "").strip()
+    cache_key = _event_cache_key_from_receive(msg)
+    if not msg_id or not cache_key:
         return
     now = time.time()
-    _last_events[msg_id] = (now, event)
-    _last_events.move_to_end(msg_id)
+    _last_events[cache_key] = (msg_id, now, event)
     _prune_event_cache(now)
 
 
-def _get_cached_event(msg_id: Any) -> Optional[Any]:
+def _get_cached_event(msg_id: Any, msg: Optional[MessageSend] = None) -> Optional[Any]:
     msg_id = str(msg_id or "").strip()
     if not msg_id:
         return None
-    cached = _last_events.get(msg_id)
+    cache_key = _event_cache_key_from_send(msg) if msg is not None else ""
+    if not cache_key:
+        return None
+    cached = _last_events.get(cache_key)
     if cached is None:
         return None
-    cached_at, event = cached
-    if time.time() - cached_at > EVENT_CACHE_TTL:
-        _last_events.pop(msg_id, None)
+    cached_msg_id, cached_at, event = cached
+    if cached_msg_id != msg_id:
         return None
-    _last_events.move_to_end(msg_id)
+    if time.time() - cached_at > EVENT_CACHE_TTL:
+        _last_events.pop(cache_key, None)
+        return None
     return event
 
 
 def _prune_event_cache(now: Optional[float] = None) -> None:
     now = time.time() if now is None else now
-    expired_before = now - EVENT_CACHE_TTL
-    while _last_events:
-        _, (cached_at, _) = next(iter(_last_events.items()))
-        if cached_at >= expired_before:
-            break
-        _last_events.popitem(last=False)
+    expired_keys = [cache_key for cache_key, (_, cached_at, _) in _last_events.items() if now - cached_at > EVENT_CACHE_TTL]
+    for cache_key in expired_keys:
+        _last_events.pop(cache_key, None)
+
+
+def _event_cache_key_from_receive(msg: MessageReceive) -> str:
+    target_type = str(getattr(msg, "user_type", "") or "").strip() or "group"
+    target_id = getattr(msg, "group_id", None) if target_type != "direct" else getattr(msg, "user_id", None)
+    return _build_event_cache_key(getattr(msg, "bot_self_id", ""), target_type, target_id)
+
+
+def _event_cache_key_from_send(msg: MessageSend) -> str:
+    return _build_event_cache_key(getattr(msg, "bot_self_id", ""), getattr(msg, "target_type", ""), getattr(msg, "target_id", None))
+
+
+def _build_event_cache_key(bot_self_id: Any, target_type: Any, target_id: Any) -> str:
+    bot_self_id = str(bot_self_id or "").strip()
+    target_type = str(target_type or "").strip() or "group"
+    target_id = str(target_id or "").strip()
+    if not target_id:
+        return ""
+    return f"{bot_self_id}:{target_type}:{target_id}"
 
 
 @handler(
@@ -642,7 +661,7 @@ async def report_to_gscore(event, match):
         if client is None:
             return
 
-        _cache_event(msg.msg_id, event)
+        _cache_event(msg, event)
         await client.input(msg)
     except Exception as exc:
         report_error(
@@ -971,7 +990,7 @@ def _get_user_pm(event) -> int:
 
 
 async def _send_to_elaina(msg: MessageSend):
-    target_event = _get_cached_event(msg.msg_id)
+    target_event = _get_cached_event(msg.msg_id, msg)
     parts = split_send_content(msg.content)
     recall_ids: List[str] = []
 
@@ -1379,7 +1398,7 @@ async def _delete_message(msg: MessageSend, data: Dict[str, Any]):
     message_id = data.get("message_id") if isinstance(data, dict) else None
     if not message_id:
         return
-    target_event = _get_cached_event(str(message_id)) or _get_cached_event(msg.msg_id)
+    target_event = _get_cached_event(str(message_id), msg) or _get_cached_event(msg.msg_id, msg)
     if target_event is not None:
         await target_event.recall(message_id=str(message_id))
     else:
