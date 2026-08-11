@@ -28,7 +28,7 @@ __plugin_meta__ = {
     "name": "ElainaBot 早柚适配器",
     "author": "MortalCat",
     "description": "一个适用于ElainaBot的GScore适配器 ",
-    "version": "1.1.2",
+    "version": "1.1.3",
     "license": "MIT",
 }
 
