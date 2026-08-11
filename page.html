@@ -808,6 +808,11 @@
                     <p>默认 10 次，填 0 表示不限制并持续重连。</p>
                   </div>
                   <div class="field">
+                    <label>WS Bot ID</label>
+                    <input name="ws_bot_id" placeholder="ElainaBot" />
+                    <p>用于连接早柚的 WS 路径，例如 <code>/ws/ElainaBot</code>。</p>
+                  </div>
+                  <div class="field">
                     <label>群指令前缀</label>
                     <input name="command_prefix" placeholder="#早柚" />
                     <p>用于管理指令，例如 <code>#早柚help</code>。</p>
@@ -901,7 +906,7 @@
 
     function renderBots(bots) {
       const list = document.getElementById('botList');
-      const connectedSet = new Set(connectedBots || []);
+      const wsConnected = Boolean((connectedBots || []).length);
 
       if (!bots.length) {
         list.innerHTML = '<div class="empty">未读取到框架 bot 配置，请检查 config/bot.yaml。</div>';
@@ -913,7 +918,7 @@
         const checked = bot.bot_id && enabledBots.has(bot.bot_id) ? 'checked' : '';
         const frameworkStatus = bot.framework_enabled ? '<span class="tag ok">框架已启用</span>' : '<span class="tag bad">框架已禁用</span>';
         const forwardStatus = checked ? '<span class="tag ok">转发开启</span>' : '<span class="tag">转发关闭</span>';
-        const connectStatus = bot.bot_id && connectedSet.has(bot.bot_id) ? '<span class="tag ok">已连接</span>' : '<span class="tag">未连接</span>';
+        const connectStatus = wsConnected ? '<span class="tag ok">WS已连接</span>' : '<span class="tag">WS未连接</span>';
         const qq = bot.robot_qq || '未配置';
         const name = bot.name || bot.appid || qq || '未命名bot';
         const avatar = bot.avatar_url || (bot.robot_qq ? `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(bot.robot_qq)}&s=100` : '');
@@ -967,6 +972,7 @@
     function collectForm() {
       return {
         enabled_bots: Array.from(enabledBots).sort(),
+        ws_bot_id: form.elements.ws_bot_id.value.trim() || 'ElainaBot',
         host: form.elements.host.value.trim(),
         port: Number(form.elements.port.value || 8765),
         token: form.elements.token.value,

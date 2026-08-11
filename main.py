@@ -37,9 +37,11 @@ ctx = _ctx_mod.ctx
 
 PLATFORM_ID = "qqgroup"
 ADAPTER_ROUTE_PREFIX = "ElainaBot"
+DEFAULT_WS_BOT_ID = "ElainaBot"
 
 DEFAULT_CONFIG = {
     "enabled_bots": [],
+    "ws_bot_id": DEFAULT_WS_BOT_ID,
     "host": "127.0.0.1",
     "port": 8765,
     "token": "",
@@ -119,37 +121,62 @@ async def _handle_save_config(request):
 
 
 async def _apply_config(config: Dict[str, Any]):
-    await _stop_clients()
     bot_map = _get_framework_bot_map()
     enabled_bot_ids = set(config.get("enabled_bots") or [])
     selected_bots = [bot for bot in bot_map.values() if bot["bot_id"] in enabled_bot_ids and bot.get("framework_enabled", True)]
+    ws_bot_id = _get_ws_bot_id(config)
 
     if not selected_bots:
-        log.info("早柚适配器未启用任何 bot")
+        log.info("早柚适配器未启用任何 bot，WS 连接保持独立运行")
+
+    client = _clients.get(ws_bot_id)
+    if client is not None and _client_matches_config(client, config):
         return
 
+    await _stop_clients()
+
     global _started_at
-    for bot in selected_bots:
-        route_bot_id = str(bot["bot_id"])
-        client = GsCoreClient(
-            route_bot_id=route_bot_id,
-            platform_bot_id=PLATFORM_ID,
-            self_id=str(bot.get("robot_qq") or bot.get("appid") or ""),
-            host=str(config["host"]),
-            port=int(config["port"]),
-            token=str(config.get("token") or ""),
-            use_ssl=bool(config.get("use_ssl", False)),
-            max_size=None,
-            reconnect_interval=int(config.get("reconnect_interval", 5)),
-            max_reconnect_attempts=int(config.get("max_reconnect_attempts", 10)),
-            send_func=_send_to_elaina,
-            delete_func=_delete_message,
-            ban_func=_ban_user,
-        )
-        _clients[route_bot_id] = client
-        await client.start()
+    client = GsCoreClient(
+        route_bot_id=ws_bot_id,
+        platform_bot_id=PLATFORM_ID,
+        self_id=_select_default_self_id(selected_bots, bot_map),
+        host=str(config["host"]),
+        port=int(config["port"]),
+        token=str(config.get("token") or ""),
+        use_ssl=bool(config.get("use_ssl", False)),
+        max_size=None,
+        reconnect_interval=int(config.get("reconnect_interval", 5)),
+        max_reconnect_attempts=int(config.get("max_reconnect_attempts", 10)),
+        send_func=_send_to_elaina,
+        delete_func=_delete_message,
+        ban_func=_ban_user,
+    )
+    _clients[ws_bot_id] = client
+    await client.start()
 
     _started_at = time.time()
+
+
+def _client_matches_config(client: GsCoreClient, config: Dict[str, Any]) -> bool:
+    return bool(
+        client
+        and client.route_bot_id == _get_ws_bot_id(config)
+        and client.host == str(config["host"])
+        and client.port == int(config["port"])
+        and client.token == str(config.get("token") or "")
+        and client.use_ssl == bool(config.get("use_ssl", False))
+        and client.reconnect_interval == int(config.get("reconnect_interval", 5))
+        and client.max_reconnect_attempts == int(config.get("max_reconnect_attempts", 10))
+    )
+
+
+def _select_default_self_id(selected_bots: List[Dict[str, Any]], bot_map: Dict[str, Dict[str, Any]]) -> str:
+    bot = selected_bots[0] if selected_bots else next(iter(bot_map.values()), {})
+    return str(bot.get("robot_qq") or bot.get("appid") or "")
+
+
+def _get_ws_bot_id(config: Dict[str, Any]) -> str:
+    return str(config.get("ws_bot_id") or DEFAULT_WS_BOT_ID).strip() or DEFAULT_WS_BOT_ID
 
 
 async def _stop_clients():
@@ -178,6 +205,7 @@ def _normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
     config.update(
         {
             "enabled_bots": enabled_bots,
+            "ws_bot_id": str(data.get("ws_bot_id") or DEFAULT_CONFIG["ws_bot_id"]).strip() or DEFAULT_CONFIG["ws_bot_id"],
             "host": str(data.get("host") or DEFAULT_CONFIG["host"]),
             "port": _to_int(data.get("port"), DEFAULT_CONFIG["port"], 1, 65535),
             "token": str(data.get("token") or ""),
@@ -657,7 +685,7 @@ async def report_to_gscore(event, match):
         if msg is None:
             return
 
-        client = _clients.get(str(bot_info.get("route_bot_id") or msg.bot_id))
+        client = _clients.get(_get_ws_bot_id(config))
         if client is None:
             return
 
