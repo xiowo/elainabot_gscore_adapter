@@ -28,7 +28,7 @@ __plugin_meta__ = {
     "name": "ElainaBot 早柚适配器",
     "author": "MortalCat",
     "description": "一个适用于ElainaBot的GScore适配器 ",
-    "version": "1.1.3",
+    "version": "1.1.4",
     "license": "MIT",
 }
 
@@ -41,6 +41,8 @@ DEFAULT_WS_BOT_ID = "ElainaBot"
 
 DEFAULT_CONFIG = {
     "enabled_bots": [],
+    "disabled_bots": [],
+    "default_enable_new_bots": True,
     "ws_bot_id": DEFAULT_WS_BOT_ID,
     "host": "127.0.0.1",
     "port": 8765,
@@ -188,6 +190,7 @@ async def _stop_clients():
 
 
 def _normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    default_enable_new_bots = bool(data.get("default_enable_new_bots", DEFAULT_CONFIG["default_enable_new_bots"]))
     migrated_enabled_bots = data.get("enabled_bots")
     if migrated_enabled_bots is None:
         legacy_route_bot_id = str(data.get("route_bot_id") or "").strip()
@@ -195,16 +198,27 @@ def _normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
         migrated_enabled_bots = [item for item in (legacy_route_bot_id, legacy_platform_bot_id) if item]
 
     valid_bot_ids = {bot["bot_id"] for bot in _get_framework_bot_map().values() if bot.get("bot_id")}
-    enabled_bots = []
-    for bot_id in migrated_enabled_bots or []:
+    disabled_bots = []
+    for bot_id in data.get("disabled_bots") or []:
         bot_id = str(bot_id).strip()
-        if bot_id and bot_id in valid_bot_ids and bot_id not in enabled_bots:
-            enabled_bots.append(bot_id)
+        if bot_id and bot_id in valid_bot_ids and bot_id not in disabled_bots:
+            disabled_bots.append(bot_id)
+
+    enabled_bots = []
+    if default_enable_new_bots:
+        enabled_bots = [bot_id for bot_id in sorted(valid_bot_ids) if bot_id not in disabled_bots]
+    else:
+        for bot_id in migrated_enabled_bots or []:
+            bot_id = str(bot_id).strip()
+            if bot_id and bot_id in valid_bot_ids and bot_id not in enabled_bots:
+                enabled_bots.append(bot_id)
 
     config = dict(DEFAULT_CONFIG)
     config.update(
         {
             "enabled_bots": enabled_bots,
+            "disabled_bots": disabled_bots,
+            "default_enable_new_bots": default_enable_new_bots,
             "ws_bot_id": str(data.get("ws_bot_id") or DEFAULT_CONFIG["ws_bot_id"]).strip() or DEFAULT_CONFIG["ws_bot_id"],
             "host": str(data.get("host") or DEFAULT_CONFIG["host"]),
             "port": _to_int(data.get("port"), DEFAULT_CONFIG["port"], 1, 65535),
@@ -343,9 +357,10 @@ def _get_framework_bot_map() -> Dict[str, Dict[str, Any]]:
 
         appid = str(bot.get("appid") or "").strip()
         robot_qq = str(bot.get("robot_qq") or "").strip()
-        if not appid or not robot_qq:
+        if not appid:
             continue
         running = running_bots.get(appid, {})
+        robot_qq = robot_qq or str(running.get("robot_qq") or "").strip()
         bot_self_openid = str(running.get("bot_self_openid") or "").strip()
         bot_id = _build_route_bot_id(robot_qq)
         key = appid

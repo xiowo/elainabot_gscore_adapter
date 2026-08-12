@@ -460,6 +460,11 @@
       line-height: 1.5;
     }
 
+    .missing-qq {
+      color: var(--red);
+      font-weight: 700;
+    }
+
     code {
       color: #5f4635;
       font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
@@ -826,8 +831,12 @@
 
                 <div class="switch-row">
                   <label class="switch">
+                    <input name="default_enable_new_bots" type="checkbox" />
+                    <span><strong>新增 bot 默认启用</strong>开启后新读取到的 bot 会自动开启转发，关闭后需手动启用</span>
+                  </label>
+                  <label class="switch">
                     <input name="use_yunzai_user_id" type="checkbox" />
-                    <span><strong>使用 Yunzai 用户ID格式</strong>开启后将使用崽的官机user_id格式</span>
+                    <span><strong>使用 Yunzai 用户ID格式</strong>开启后将使用崽的官机 <code>bot:user</code> 格式</span>
                   </label>
                   <label class="switch">
                     <input name="unauthorized_silent" type="checkbox" />
@@ -919,7 +928,8 @@
         const frameworkStatus = bot.framework_enabled ? '<span class="tag ok">框架已启用</span>' : '<span class="tag bad">框架已禁用</span>';
         const forwardStatus = checked ? '<span class="tag ok">转发开启</span>' : '<span class="tag">转发关闭</span>';
         const connectStatus = wsConnected ? '<span class="tag ok">WS已连接</span>' : '<span class="tag">WS未连接</span>';
-        const qq = bot.robot_qq || '未配置';
+        const qq = bot.robot_qq || '未配置QQ号';
+        const qqClass = bot.robot_qq ? '' : ' class="missing-qq"';
         const name = bot.name || bot.appid || qq || '未命名bot';
         const avatar = bot.avatar_url || (bot.robot_qq ? `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(bot.robot_qq)}&s=100` : '');
 
@@ -934,7 +944,7 @@
                 ${connectStatus}
               </span>
               <span class="bot-meta">
-                <span>QQ: <code>${escapeHtml(qq)}</code></span>
+                <span>QQ: <code${qqClass}>${escapeHtml(qq)}</code></span>
                 <span>appid: <code>${escapeHtml(bot.appid || '--')}</code></span>
               </span>
             </span>
@@ -970,8 +980,12 @@
     }
 
     function collectForm() {
+      const defaultEnableNewBots = form.elements.default_enable_new_bots.checked;
+      const knownBotIds = frameworkBots.map((bot) => bot.bot_id).filter(Boolean);
       return {
         enabled_bots: Array.from(enabledBots).sort(),
+        disabled_bots: defaultEnableNewBots ? knownBotIds.filter((botId) => !enabledBots.has(botId)).sort() : [],
+        default_enable_new_bots: defaultEnableNewBots,
         ws_bot_id: form.elements.ws_bot_id.value.trim() || 'ElainaBot',
         host: form.elements.host.value.trim(),
         port: Number(form.elements.port.value || 8765),
@@ -994,6 +1008,7 @@
       return JSON.stringify({
         ...config,
         enabled_bots: [...(config.enabled_bots || [])].sort(),
+        disabled_bots: [...(config.disabled_bots || [])].sort(),
         disabled_groups: [...(config.disabled_groups || [])].sort(),
         blocked_users: [...(config.blocked_users || [])].sort(),
       });
