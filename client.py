@@ -245,6 +245,7 @@ def split_send_content(content: Optional[Iterable[Message]]) -> Dict[str, Any]:
         "node": [],
         "at_list": [],
         "reply": None,
+        "reply_id": None,
         "markdown": "",
         "buttons": [],
         "template_markdown": {},
@@ -270,8 +271,11 @@ def split_send_content(content: Optional[Iterable[Message]]) -> Dict[str, Any]:
             result["node"] = item.data
         elif item.type == "at":
             result["at_list"].append(str(item.data))
-        elif item.type == "reply":
-            result["reply"] = item.data
+        elif item.type in {"reply", "reply_id"}:
+            if item.type == "reply_id":
+                result["reply_id"] = item.data
+            elif result["reply_id"] is None:
+                result["reply"] = item.data
         elif item.type == "markdown":
             result["markdown"] = item.data
             result["ordered"].append(("text", str(item.data)))

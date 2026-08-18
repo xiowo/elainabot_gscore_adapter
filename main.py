@@ -28,7 +28,7 @@ __plugin_meta__ = {
     "name": "ElainaBot 早柚适配器",
     "author": "MortalCat",
     "description": "一个适用于ElainaBot的GScore适配器 ",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "license": "MIT",
 }
 
@@ -55,7 +55,6 @@ DEFAULT_CONFIG = {
     "disabled_groups": [],
     "blocked_users": [],
     "use_yunzai_user_id": False,
-    "send_unsupported_as_text": True,
     "private_json_file_to_base64": False,
     "private_json_file_max_size_kb": 2048,
 }
@@ -67,6 +66,9 @@ INLINE_ATTACHMENT_PATTERN = re.compile(
     r'<attachmentType="(?P<content_type>[^"]+)"[^>]*>\s*<(?P<url>https?://[^>\s]+)>',
     re.IGNORECASE,
 )
+IMAGE_ATTACHMENT_MARKER_PATTERN = re.compile(r"<attachmentType=[\"']image/[^>]+>", re.IGNORECASE)
+BIDI_CONTROL_PATTERN = re.compile(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+NODE_MARK = "[合并转发]"
 
 _clients: Dict[str, GsCoreClient] = {}
 _last_events: Dict[str, Tuple[str, float, Any]] = {}
@@ -231,7 +233,6 @@ def _normalize_config(data: Dict[str, Any]) -> Dict[str, Any]:
             "disabled_groups": _normalize_str_list(data.get("disabled_groups")),
             "blocked_users": _normalize_str_list(data.get("blocked_users")),
             "use_yunzai_user_id": bool(data.get("use_yunzai_user_id", DEFAULT_CONFIG["use_yunzai_user_id"])),
-            "send_unsupported_as_text": bool(data.get("send_unsupported_as_text", DEFAULT_CONFIG["send_unsupported_as_text"])),
             "private_json_file_to_base64": bool(
                 data.get("private_json_file_to_base64", DEFAULT_CONFIG["private_json_file_to_base64"])
             ),
@@ -297,13 +298,6 @@ def _is_auto_reconnecting() -> bool:
     return any(_client_running(client) and not _client_connected(client) for client in _clients.values())
 
 
-async def _restart_clients() -> Dict[str, Any]:
-    config = _normalize_config(ctx.read_config(filename="config.yaml") or DEFAULT_CONFIG)
-    ctx.save_config(config, filename="config.yaml")
-    await _apply_config(config)
-    return config
-
-
 async def _manual_restart_clients(max_attempts: int = 3) -> Optional[bool]:
     global _manual_reconnecting
     if _manual_reconnecting or _is_auto_reconnecting():
@@ -351,7 +345,7 @@ def _get_framework_bot_map() -> Dict[str, Dict[str, Any]]:
 
     running_bots = _get_running_bot_map()
 
-    for index, bot in enumerate(bot_configs or []):
+    for bot in bot_configs or []:
         if not isinstance(bot, dict):
             continue
 
@@ -750,18 +744,18 @@ async def _event_to_receive(event) -> Optional[MessageReceive]:
 async def _event_to_content(event, config: Dict[str, Any], bot_info: Dict[str, Any]) -> List[Message]:
     content: List[Message] = []
     seen_image_urls: set[str] = set()
+    raw_text = event.content if event.content is not None else event.raw_content
+    text_node_items = _extract_associated_node_items(raw_text)
 
     for mention in getattr(event, "mentions", None) or []:
         _append_mention_content(content, mention)
 
-    text = event.content if event.content is not None else event.raw_content
+    text = raw_text
     text, inline_image_urls = _extract_inline_attachment_images(text)
 
-    reply_id = str(getattr(event, "message_reference_id", "") or "")
-    if reply_id and not inline_image_urls:
-        content.append(Message("reply", reply_id))
-
-    if text:
+    if text_node_items:
+        content.append(Message("node", text_node_items))
+    elif text:
         content.append(Message("text", str(text)))
 
     for image_url in inline_image_urls:
@@ -779,10 +773,201 @@ async def _event_to_content(event, config: Dict[str, Any], bot_info: Dict[str, A
                 continue
             content.append(converted)
 
-    for image_url in _extract_msg_element_image_urls(getattr(event, "msg_elements", None)):
-        _append_unique_image(content, seen_image_urls, image_url)
+    elements = getattr(event, "msg_elements", None) or []
+    node_items = _extract_node_items(elements)
+    if not node_items:
+        for image_url in _extract_msg_element_image_urls(elements):
+            _append_unique_image(content, seen_image_urls, image_url)
+
+    if str(getattr(event, "message_reference_id", "") or "").strip():
+        content.extend(_build_reference_content(event, seen_image_urls))
+    elif node_items:
+        content.append(Message("node", node_items))
 
     return content
+
+
+def _build_reference_content(event, seen_image_urls: set[str]) -> List[Message]:
+    """引用转换"""
+    reply_id = str(getattr(event, "message_reference_id", "") or "").strip()
+    if not reply_id:
+        return []
+
+    elements = getattr(event, "msg_elements", None) or []
+    reply_text = _extract_reference_text(elements)
+    node_items = _extract_node_items(elements)
+    if node_items:
+        reply_text = _format_node_preview(node_items)
+
+    result = [Message("reply_id", reply_id), Message("reply", reply_text)]
+    if node_items:
+        result.append(Message("node", node_items))
+    else:
+        for image_url in _extract_msg_element_image_urls(elements):
+            _append_unique_image(result, seen_image_urls, image_url)
+    return result
+
+
+def _extract_reference_text(elements: Any) -> str:
+    texts = []
+    for element in elements if isinstance(elements, list) else []:
+        if not isinstance(element, dict):
+            continue
+        value = element.get("content") or element.get("text") or ""
+        if isinstance(value, str) and value.strip():
+            texts.append(_normalize_reference_text(value))
+    return "\n".join(texts)
+
+
+def _normalize_reference_text(value: str) -> str:
+    """从 QQ msg_elements 的调试描述中提取被引用消息正文。"""
+    text = str(value or "").strip()
+    if "[关联消息]" not in text:
+        return text
+
+    associated = text.split("[关联消息]", 1)[1]
+    matches = re.findall(
+        r"(?ms)^\s*\[消息内容\]\s*(.*?)"
+        r"(?=^\s*\[(?:发送者|消息类型|关联消息)\]|^\s*---\s*第\d+条\s*---|^\s*--\s*$|\Z)",
+        associated,
+    )
+    contents = [item.strip() for item in matches if item.strip()]
+    return "\n".join(contents) if contents else ""
+
+
+def _extract_node_items(elements: Any) -> List[Message]:
+    """兼容 node/nodes/forward 的扁平或嵌套字典表示。"""
+    items: List[Message] = []
+    has_forward_element = False
+    for element in elements if isinstance(elements, list) else []:
+        if not isinstance(element, dict):
+            continue
+        kind = str(element.get("type") or element.get("message_type") or "").lower()
+        payload = element.get("data") if isinstance(element.get("data"), dict) else element
+        has_structured_nodes = isinstance(payload.get("nodes"), list) or isinstance(payload.get("messages"), list)
+        is_forward = kind in {"node", "nodes", "forward", "forward_msg", "forward_message"}
+        has_forward_element = has_forward_element or is_forward or has_structured_nodes
+        entries = payload.get("nodes") or payload.get("messages") or payload.get("content")
+        if isinstance(entries, list):
+            items.extend(_node_entries_to_messages(entries))
+            continue
+        items.extend(_extract_associated_node_items(element.get("content")))
+    return items or ([Message("text", NODE_MARK)] if has_forward_element else [])
+
+
+def _extract_associated_node_items(value: Any) -> List[Message]:
+    """解析 QQ 官方 msg_elements 中的 `[关联消息]` 群聊记录描述。"""
+    text = str(value or "")
+    if "[关联消息]" in text:
+        associated = text.split("[关联消息]", 1)[1]
+    elif "[群聊的聊天记录]" in text:
+        associated = text.split("[群聊的聊天记录]", 1)[1]
+    else:
+        return []
+
+    blocks = re.split(r"(?m)^\s*(?:===\s*消息\s*\d+\s*===|---\s*第\d+条\s*---)\s*$", associated)
+    items: List[Message] = []
+    for block in blocks[1:]:
+        content_match = re.search(
+            r"(?ms)^\s*\[消息内容\]\s*(.*?)(?=^\s*\[(?:发送者|消息类型|关联消息)\]|^\s*--\s*$|\Z)",
+            block,
+        )
+        sender_match = re.search(r"(?m)^\s*\[发送者\]\s*(.*?)\s*$", block)
+        content = content_match.group(1).strip() if content_match else ""
+        sender = _sanitize_display_text(sender_match.group(1)) if sender_match else ""
+        _, inline_image_urls = _extract_inline_attachment_images(content)
+        image_urls = inline_image_urls[:]
+        attachment_url = _extract_attachment_url(block)
+        if attachment_url and attachment_url not in image_urls:
+            image_urls.append(attachment_url)
+        if image_urls:
+            prefix = f"{sender}：" if sender else ""
+            if prefix:
+                items.append(Message("text", prefix))
+            items.extend(Message("image", image_url) for image_url in image_urls)
+            continue
+        content = _normalize_node_content(content)
+        if not content:
+            continue
+        prefix = f"{sender}：" if sender else ""
+        if prefix:
+            items.append(Message("text", prefix))
+        items.append(Message("text", content))
+    return items
+
+
+def _extract_attachment_url(block: str) -> str:
+    match = re.search(r"(?im)^\s*\[附件\d*\].*?类型\s*:\s*图片\b.*?\bURL\s*:\s*(https?://\S+)", block)
+    return match.group(1).rstrip("，,。") if match else ""
+
+
+def _normalize_node_content(value: Any) -> str:
+    content = _sanitize_display_text(value)
+    _, image_urls = _extract_inline_attachment_images(content)
+    if image_urls or IMAGE_ATTACHMENT_MARKER_PATTERN.search(content):
+        return "[图片]"
+    return content
+
+
+def _sanitize_display_text(value: Any) -> str:
+    return BIDI_CONTROL_PATTERN.sub("", str(value or "")).strip()
+
+
+def _node_entries_to_messages(entries: List[Any]) -> List[Message]:
+    result: List[Message] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        sender = entry.get("sender") or {}
+        nickname = sender.get("nickname") if isinstance(sender, dict) else entry.get("name")
+        if nickname:
+            result.append(Message("text", f"{_sanitize_display_text(nickname)}："))
+        segments = entry.get("content") or entry.get("message") or entry.get("data")
+        if isinstance(segments, str):
+            result.append(Message("text", _sanitize_display_text(segments)))
+        elif isinstance(segments, list):
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                segment_type = str(segment.get("type") or "")
+                data = segment.get("data")
+                if segment_type == "text":
+                    data = data.get("text", "") if isinstance(data, dict) else data
+                elif segment_type == "image" and isinstance(data, dict):
+                    data = data.get("url") or data.get("file")
+                if data:
+                    result.append(Message(segment_type, str(data)))
+    return result or [Message("text", NODE_MARK)]
+
+
+def _format_node_preview(items: List[Message]) -> str:
+    lines = [NODE_MARK]
+    index = 0
+    while index < len(items):
+        item = items[index]
+        if item.type == "text" and item.data:
+            text = str(item.data).strip()
+            if text.endswith(("：", ":")) and index + 1 < len(items):
+                next_item = items[index + 1]
+                if next_item.type == "text":
+                    lines.append(f"{text}{str(next_item.data or '').strip()}")
+                    index += 2
+                    continue
+                if next_item.type == "image":
+                    lines.append(f"{text}[图片]")
+                    index += 2
+                    continue
+            lines.append(text)
+        elif item.type == "image":
+            lines.append("[图片]")
+        elif item.type == "record":
+            lines.append("[语音]")
+        elif item.type == "video":
+            lines.append("[视频]")
+        elif item.type == "file":
+            lines.append("[文件]")
+        index += 1
+    return "\n".join(line for line in lines if line)
 
 
 def _extract_inline_attachment_images(text: Any) -> Tuple[str, List[str]]:
@@ -1078,6 +1263,7 @@ async def _send_to_elaina(msg: MessageSend):
 async def _send_with_event(event, msg: MessageSend, parts: Dict[str, Any]):
     text = _compose_text(parts)
     response = None
+    reply_kwargs = _build_reply_kwargs(parts)
 
     if parts["image"]:
         markdown = await _compose_ordered_markdown(parts, event=event)
@@ -1088,27 +1274,33 @@ async def _send_with_event(event, msg: MessageSend, parts: Dict[str, Any]):
                 msg_type=MSG_TYPE_MARKDOWN,
                 buttons=_normalize_buttons(parts["buttons"]),
                 skip_suffix=True,
+                **reply_kwargs,
             )
         else:
             log.warning("图片上传图床失败，回退文本回复: target=%s/%s", msg.target_type, msg.target_id)
-            response = await event.reply(text or "图片上传失败", buttons=_normalize_buttons(parts["buttons"]))
+            response = await event.reply(text or "图片上传失败", buttons=_normalize_buttons(parts["buttons"]), **reply_kwargs)
     elif parts["record"]:
         media_type, payload = _decode_media_payload(parts["record"])
         log.info("通过原始 event 回复语音: media_type=%s target=%s/%s", media_type, msg.target_type, msg.target_id)
-        response = await event.reply_voice(payload)
+        response = await event.reply_voice(payload, **reply_kwargs)
     elif parts["video"]:
         media_type, payload = _decode_media_payload(parts["video"])
         log.info("通过原始 event 回复视频: media_type=%s target=%s/%s", media_type, msg.target_type, msg.target_id)
-        response = await event.reply_video(payload)
+        response = await event.reply_video(payload, **reply_kwargs)
     elif parts["file"]:
         file_name, payload = _split_file_payload(str(parts["file"]))
         media_type, file_payload = _decode_media_payload(payload)
         log.info("通过原始 event 回复文件: media_type=%s file_name=%s target=%s/%s", media_type, file_name, msg.target_type, msg.target_id)
-        response = await event.reply_file(file_payload, text or file_name, file_name=file_name)
+        response = await event.reply_file(file_payload, text or file_name, file_name=file_name, **reply_kwargs)
     elif text or parts["buttons"]:
         log.info("通过原始 event 回复文本: target=%s/%s", msg.target_type, msg.target_id)
-        response = await event.reply(text or " ", buttons=_normalize_buttons(parts["buttons"]))
+        response = await event.reply(text or " ", buttons=_normalize_buttons(parts["buttons"]), **reply_kwargs)
     return response
+
+
+def _build_reply_kwargs(parts: Dict[str, Any]) -> Dict[str, Any]:
+    reply_id = parts.get("reply_id") or parts.get("reply")
+    return {"message_reference_id": str(reply_id)} if reply_id else {}
 
 
 async def _send_with_sender(msg: MessageSend, parts: Dict[str, Any]):
@@ -1119,6 +1311,7 @@ async def _send_with_sender(msg: MessageSend, parts: Dict[str, Any]):
         log.warning("无法主动发送消息，缺少可用 bot sender: bot_self_id=%s", msg.bot_self_id)
         return None
     text = _compose_text(parts)
+    reply_kwargs = _build_reply_kwargs(parts)
 
     if msg.target_type == "group":
         if parts["image"]:
@@ -1131,10 +1324,11 @@ async def _send_with_sender(msg: MessageSend, parts: Dict[str, Any]):
                     buttons=_normalize_buttons(parts["buttons"]),
                     msg_type=MSG_TYPE_MARKDOWN,
                     skip_suffix=True,
+                    **reply_kwargs,
                 )
             log.warning("群图片上传图床失败，回退文本发送: target_id=%s", msg.target_id)
         log.info("通过 sender 主动发送群文本: target_id=%s", msg.target_id)
-        return await sender.send_to_group(msg.target_id, text or " ")
+        return await sender.send_to_group(msg.target_id, text or " ", **reply_kwargs)
     if msg.target_type == "direct":
         if parts["image"]:
             markdown = await _compose_ordered_markdown(parts, sender=sender)
@@ -1146,12 +1340,13 @@ async def _send_with_sender(msg: MessageSend, parts: Dict[str, Any]):
                     buttons=_normalize_buttons(parts["buttons"]),
                     msg_type=MSG_TYPE_MARKDOWN,
                     skip_suffix=True,
+                    **reply_kwargs,
                 )
             log.warning("私聊图片上传图床失败，回退文本发送: target_id=%s", msg.target_id)
         log.info("通过 sender 主动发送私聊文本: target_id=%s", msg.target_id)
-        return await sender.send_to_user(msg.target_id, text or " ")
+        return await sender.send_to_user(msg.target_id, text or " ", **reply_kwargs)
     if msg.target_type in {"channel", "sub_channel"}:
-        return await sender.send_to_channel(msg.target_id, text or " ")
+        return await sender.send_to_channel(msg.target_id, text or " ", **reply_kwargs)
     return None
 
 
